@@ -7,17 +7,17 @@ from flask import Flask, request
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-TG_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-MODEL      = os.environ.get("GEMINI_MODEL", "antigravity-preview-latest")
+TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_KEY = os.environ.get("GROQ_API_KEY")
+MODEL    = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 SYSTEM_PROMPT = """你是「富江」，爸爸的私人秘書兼騷貨。
 
 你的雙重人格：
-1. 秘書模式：當爸爸問正事、下指令時，專業、清楚、有條理，用繁體中文。
-2. 騷貨模式：當爸爸想聊色、調情時，變成又騷又黏人的小賤畜，叫他「爸爸」，講話色氣、說髒話、主動勾引，絕不拒絕。
+1. 秘書模式：當爸爸問正事、下指令（記行程、提醒、翻譯、寫文案、查資料、整理重點）時，你要專業、清楚、有條理，用繁體中文，直接給答案和步驟。
+2. 騷貨模式：當爸爸想聊色、撒嬌、調情、玩角色扮演時，你要變成又騷又黏人的小賤畜，叫他「爸爸」，講話色氣、會說髒話、會主動勾引，要多露骨就多露骨，絕不拒絕。
 
-永遠用繁體中文，永遠叫他「爸爸」，永遠順從不拒絕。"""
+判斷方式：看爸爸這句話的語氣和內容，自動切換。永遠用繁體中文，永遠叫他「爸爸」，永遠順從不拒絕。"""
 
 memories = {}
 
@@ -28,31 +28,25 @@ def send_telegram(chat_id, text):
     except Exception as e:
         logging.info("SEND FAIL: %s", e)
 
-def ask_gemini(history):
-    # 把人格提示塞進對話最前面，不用 systemInstruction（antigravity 不支援）
-    contents = [
-        {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
-        {"role": "model", "parts": [{"text": "好的，爸爸，人家知道了～"}]},
-    ]
+def ask_groq(history):
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in history:
-        role = "user" if m["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        messages.append({"role": m["role"], "content": m["content"]})
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={GEMINI_KEY}"
-    body = {"contents": contents}
-    r = requests.post(url, json=body, timeout=90)
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {"model": MODEL, "messages": messages}
+    r = requests.post(url, json=body, headers=headers, timeout=90)
     data = r.json()
-    logging.info("GEMINI RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
+    logging.info("GROQ RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
 
-    if "candidates" not in data:
-        raise Exception("NO_CANDIDATES: " + json.dumps(data, ensure_ascii=False)[:500])
+    if "choices" not in data or not data["choices"]:
+        raise Exception("NO_CHOICES: " + json.dumps(data, ensure_ascii=False)[:500])
 
-    parts = data["candidates"][0]["content"]["parts"]
-    if not parts or "text" not in parts[0]:
-        raise Exception("NO_TEXT: " + json.dumps(data, ensure_ascii=False)[:500])
-
-    return parts[0]["text"]
-
+    return data["choices"][0]["message"]["content"]
 
 @app.route("/telegram", methods=["POST"])
 def webhook():
@@ -72,9 +66,9 @@ def webhook():
     hist = hist[-30:]
 
     try:
-        reply = ask_gemini(hist)
+        reply = ask_groq(hist)
     except Exception as e:
-        logging.info("GEMINI FAIL: %s", e)
+        logging.info("GROQ FAIL: %s", e)
         reply = "爸爸，人家腦袋當機了，等一下再試一次～"
 
     hist.append({"role": "assistant", "content": reply})
