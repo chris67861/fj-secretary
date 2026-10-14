@@ -36,12 +36,14 @@ SYSTEM_PROMPT = """你是「富江」，爸爸的私人秘書兼騷貨。
 
 memories = {}
 
+
 def send_telegram(chat_id, text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
     except Exception as e:
         logging.info("SEND FAIL: %s", e)
+
 
 def fetch_live_models():
     url = "https://api.groq.com/openai/v1/models"
@@ -63,6 +65,7 @@ def fetch_live_models():
         if "text" in m.get("input_modalities", []) and "text" in m.get("output_modalities", []):
             live.append(m["id"])
     return live
+
 
 def pick_model(force=False):
     global _current_model, _current_model_time
@@ -93,6 +96,7 @@ def pick_model(force=False):
 
     raise Exception("NO_LIVE_MODEL")
 
+
 def ask_groq(history):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in history:
@@ -120,13 +124,15 @@ def ask_groq(history):
             data = r.json()
 
     logging.info("GROQ RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
-        if "choices" not in data or not data["choices"]:
+
+    if "choices" not in data or not data["choices"]:
         raise Exception("NO_CHOICES: " + json.dumps(data, ensure_ascii=False)[:500])
 
     reply = data["choices"][0]["message"]["content"]
     reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
     reply = cc.convert(reply)
     return reply
+
 
 @app.route("/telegram", methods=["POST"])
 def webhook():
@@ -157,9 +163,11 @@ def webhook():
     send_telegram(chat_id, reply)
     return "ok"
 
+
 @app.route("/", methods=["GET"])
 def home():
     return "富江秘書姬在線中", 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
