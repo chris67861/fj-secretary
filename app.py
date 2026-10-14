@@ -133,6 +133,15 @@ def ask_groq(history):
     reply = data["choices"][0]["message"]["content"]
     reply = re.sub(r"<think[^>]*>.*?</think>", "", reply, flags=re.DOTALL)
     reply = re.sub(r"<thinking[^>]*>.*?</thinking>", "", reply, flags=re.DOTALL)
+    reply = re.sub(r"【.*?】", "", reply, flags=re.DOTALL)
+    reply = re.sub(r"\([^()]*\)", "", reply)
+    reply = re.sub(r"（[^（）]*）", "", reply)
+    reply = re.sub(r"\*[^*]*\*", "", reply)
+    reply = re.sub(r"\[[^\[\]]*\]", "", reply)
+    reply = re.sub(r"｛[^｛｝]*｝", "", reply)
+    reply = re.sub(r"　+", " ", reply)
+    reply = re.sub(r"[ \t]+", " ", reply)
+    reply = re.sub(r"\n{3,}", "\n\n", reply)
     reply = reply.strip()
     reply = cc.convert(reply)
     return reply
