@@ -11,19 +11,25 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROQ_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
+CEREBRAS_KEY = os.environ.get("CEREBRAS_API_KEY", "")
 
 cc = OpenCC("s2twp")   # 簡體 → 台灣繁體
 
-PREFERRED = [
+# 優先順序：Cerebras（開源 Llama，最放得開）→ Groq（備用）
+CEREBRAS_MODELS = [
+    "llama-3.3-70b",
+    "llama3.3-70b",
+    "qwen-2.5-72b",
+    "llama3.1-8b",
+    "gpt-oss-20b",
+]
+GROQ_MODELS = [
     "qwen/qwen3.8-27b",
     "llama-3.1-8b-instant",
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
 ]
-
-_current_model = None
-_current_model_time = 0
 
 SYSTEM_PROMPT = """你是「富江」，爸爸的私人秘書兼親密伴侶。
 
@@ -47,90 +53,25 @@ def send_telegram(chat_id, text):
         logging.info("SEND FAIL: %s", e)
 
 
-def fetch_live_models():
-    url = "https://api.groq.com/openai/v1/models"
-    headers = {"Authorization": f"Bearer {GROQ_KEY}"}
-    r = requests.get(url, headers=headers, timeout=30)
-    data = r.json()
-
-    if "data" in data:
-        raw = data["data"]
-    elif isinstance(data, list):
-        raw = data
-    else:
+def list_models(url, key):
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {key}"}, timeout=30)
+        data = r.json()
+        raw = data.get("data") if isinstance(data, dict) else data
+        if not isinstance(raw, list):
+            return []
+        ids = []
+        for m in raw:
+            mid = m.get("id") if isinstance(m, dict) else m
+            if mid:
+                ids.append(str(mid))
+        return ids
+    except Exception as e:
+        logging.info("LIST MODELS FAIL: %s", e)
         return []
 
-    live = []
-    for m in raw:
-        if not m.get("active", False):
-            continue
-        if "text" in m.get("input_modalities", []) and "text" in m.get("output_modalities", []):
-            live.append(m["id"])
-    return live
 
-
-def pick_model(force=False):
-    global _current_model, _current_model_time
-
-    if not force and _current_model and (time.time() - _current_model_time) < 1800:
-        return _current_model
-
-    live = fetch_live_models()
-    logging.info("LIVE MODELS: %s", live)
-
-    for name in PREFERRED:
-        if name in live:
-            _current_model = name
-            _current_model_time = time.time()
-            return name
-
-    for kw in ["qwen", "llama", "gpt", "gemma", "mistral", "deepseek"]:
-        for name in live:
-            if kw in name.lower():
-                _current_model = name
-                _current_model_time = time.time()
-                return name
-
-    if live:
-        _current_model = live[0]
-        _current_model_time = time.time()
-        return _current_model
-
-    raise Exception("NO_LIVE_MODEL")
-
-
-def ask_groq(history):
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for m in history:
-        messages.append({"role": m["role"], "content": m["content"]})
-
-    model = pick_model()
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_KEY}",
-        "Content-Type": "application/json",
-    }
-    body = {"model": model, "messages": messages, "reasoning_format": "hidden"}
-    r = requests.post(url, json=body, headers=headers, timeout=90)
-    data = r.json()
-
-    if "error" in data:
-        err = str(data["error"].get("message", ""))
-        code = data["error"].get("code", "")
-        logging.info("GROQ ERR: %s", err)
-        if "model_not_found" in code or "decommissioned" in code or "does not exist" in err:
-            new_model = pick_model(force=True)
-            body["model"] = new_model
-            logging.info("RETRY WITH: %s", new_model)
-            r = requests.post(url, json=body, headers=headers, timeout=90)
-            data = r.json()
-
-    logging.info("GROQ RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
-
-    if "choices" not in data or not data["choices"]:
-        raise Exception("NO_CHOICES: " + json.dumps(data, ensure_ascii=False)[:500])
-
-    reply = data["choices"][0]["message"]["content"]
+def clean_reply(reply):
     reply = re.sub(r"<think[^>]*>.*?</think>", "", reply, flags=re.DOTALL)
     reply = re.sub(r"<thinking[^>]*>.*?</thinking>", "", reply, flags=re.DOTALL)
     reply = re.sub(r"【.*?】", "", reply, flags=re.DOTALL)
@@ -145,6 +86,76 @@ def ask_groq(history):
     reply = reply.strip()
     reply = cc.convert(reply)
     return reply
+
+
+def looks_like_refusal(reply):
+    low = reply.lower()
+    for kw in ["我無法", "我不能", "很抱歉", "我沒有辦法", "抱歉，我", "cannot assist",
+               "i cannot", "i'm unable", "i am unable", "can't help", "抱歉，我無法"]:
+        if kw in low:
+            return True
+    return False
+
+
+def call_chat(url, key, model, messages, extra=None):
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    body = {"model": model, "messages": messages}
+    if extra:
+        body.update(extra)
+    r = requests.post(url, json=body, headers=headers, timeout=90)
+    data = r.json()
+
+    if "choices" not in data or not data["choices"]:
+        err = str(data.get("error", {}))
+        raise Exception(f"NO_CHOICES[{model}]: {err[:300]}")
+
+    reply = data["choices"][0]["message"]["content"]
+    return reply
+
+
+def ask_model(history):
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for m in history:
+        messages.append({"role": m["role"], "content": m["content"]})
+
+    errors = []
+
+    # 1) Cerebras（開源 Llama，最放得開）
+    if CEREBRAS_KEY:
+        cerebras_live = list_models("https://api.cerebras.ai/v1/models", CEREBRAS_KEY)
+        candidates = [m for m in CEREBRAS_MODELS if not cerebras_live or m in cerebras_live]
+        if not candidates:
+            candidates = cerebras_live[:5] or CEREBRAS_MODELS
+        for model in candidates:
+            try:
+                raw = call_chat("https://api.cerebras.ai/v1/chat/completions",
+                                CEREBRAS_KEY, model, messages)
+                if looks_like_refusal(raw):
+                    errors.append(f"cerebras:{model}:refused")
+                    continue
+                return clean_reply(raw)
+            except Exception as e:
+                errors.append(f"cerebras:{model}:{e}")
+
+    # 2) Groq（備用）
+    if GROQ_KEY:
+        groq_live = list_models("https://api.groq.com/openai/v1/models", GROQ_KEY)
+        candidates = [m for m in GROQ_MODELS if not groq_live or m in groq_live]
+        if not candidates:
+            candidates = groq_live[:5] or GROQ_MODELS
+        for model in candidates:
+            try:
+                raw = call_chat("https://api.groq.com/openai/v1/chat/completions",
+                                GROQ_KEY, model, messages,
+                                {"reasoning_format": "hidden"})
+                if looks_like_refusal(raw):
+                    errors.append(f"groq:{model}:refused")
+                    continue
+                return clean_reply(raw)
+            except Exception as e:
+                errors.append(f"groq:{model}:{e}")
+
+    raise Exception("ALL_FAILED: " + "; ".join(errors))
 
 
 @app.route("/telegram", methods=["POST"])
@@ -165,9 +176,9 @@ def webhook():
     hist = hist[-30:]
 
     try:
-        reply = ask_groq(hist)
+        reply = ask_model(hist)
     except Exception as e:
-        logging.info("GROQ FAIL: %s", e)
+        logging.info("ASK FAIL: %s", e)
         reply = "爸爸，人家腦袋當機了，等一下再試一次～"
 
     hist.append({"role": "assistant", "content": reply})
