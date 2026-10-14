@@ -29,16 +29,17 @@ def send_telegram(chat_id, text):
         logging.info("SEND FAIL: %s", e)
 
 def ask_gemini(history):
-    contents = []
+    # 把人格提示塞進對話最前面，不用 systemInstruction（antigravity 不支援）
+    contents = [
+        {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
+        {"role": "model", "parts": [{"text": "好的，爸爸，人家知道了～"}]},
+    ]
     for m in history:
         role = "user" if m["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": m["content"]}]})
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={GEMINI_KEY}"
-    body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": contents,
-    }
+    body = {"contents": contents}
     r = requests.post(url, json=body, timeout=90)
     data = r.json()
     logging.info("GEMINI RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
@@ -51,6 +52,7 @@ def ask_gemini(history):
         raise Exception("NO_TEXT: " + json.dumps(data, ensure_ascii=False)[:500])
 
     return parts[0]["text"]
+
 
 @app.route("/telegram", methods=["POST"])
 def webhook():
