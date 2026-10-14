@@ -2,7 +2,6 @@ import os
 import json
 import logging
 import re
-import time
 import requests
 from flask import Flask, request
 from opencc import OpenCC
@@ -11,19 +10,21 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CF_ACCOUNT = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
-CEREBRAS_KEY = os.environ.get("CEREBRAS_API_KEY", "")
 
 cc = OpenCC("s2twp")   # 簡體 → 台灣繁體
 
-# 優先順序：Cerebras（開源 Llama，最放得開）→ Groq（備用）
-CEREBRAS_MODELS = [
-    "llama-3.3-70b",
-    "llama3.3-70b",
-    "qwen-2.5-72b",
-    "llama3.1-8b",
-    "gpt-oss-20b",
+# Cloudflare Workers AI：免費、不用刷卡，Qwen/DeepSeek 中文最放得開
+CF_MODELS = [
+    "@cf/qwen/qwen3.8-27b",
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/qwen/qwen3-30b-a3b-fp8",
 ]
+
+# Groq 當備用
 GROQ_MODELS = [
     "qwen/qwen3.8-27b",
     "llama-3.1-8b-instant",
@@ -51,24 +52,6 @@ def send_telegram(chat_id, text):
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
     except Exception as e:
         logging.info("SEND FAIL: %s", e)
-
-
-def list_models(url, key):
-    try:
-        r = requests.get(url, headers={"Authorization": f"Bearer {key}"}, timeout=30)
-        data = r.json()
-        raw = data.get("data") if isinstance(data, dict) else data
-        if not isinstance(raw, list):
-            return []
-        ids = []
-        for m in raw:
-            mid = m.get("id") if isinstance(m, dict) else m
-            if mid:
-                ids.append(str(mid))
-        return ids
-    except Exception as e:
-        logging.info("LIST MODELS FAIL: %s", e)
-        return []
 
 
 def clean_reply(reply):
@@ -106,11 +89,10 @@ def call_chat(url, key, model, messages, extra=None):
     data = r.json()
 
     if "choices" not in data or not data["choices"]:
-        err = str(data.get("error", {}))
-        raise Exception(f"NO_CHOICES[{model}]: {err[:300]}")
+        err = str(data.get("error", data.get("errors", {})))[:300]
+        raise Exception(f"NO_CHOICES[{model}]: {err}")
 
-    reply = data["choices"][0]["message"]["content"]
-    return reply
+    return data["choices"][0]["message"]["content"]
 
 
 def ask_model(history):
@@ -120,33 +102,25 @@ def ask_model(history):
 
     errors = []
 
-    # 1) Cerebras（開源 Llama，最放得開）
-    if CEREBRAS_KEY:
-        cerebras_live = list_models("https://api.cerebras.ai/v1/models", CEREBRAS_KEY)
-        candidates = [m for m in CEREBRAS_MODELS if not cerebras_live or m in cerebras_live]
-        if not candidates:
-            candidates = cerebras_live[:5] or CEREBRAS_MODELS
-        for model in candidates:
+    # 1) Cloudflare Workers AI（免費、不用刷卡、最放得開）
+    if CF_ACCOUNT and CF_TOKEN:
+        cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/v1/chat/completions"
+        for model in CF_MODELS:
             try:
-                raw = call_chat("https://api.cerebras.ai/v1/chat/completions",
-                                CEREBRAS_KEY, model, messages)
+                raw = call_chat(cf_url, CF_TOKEN, model, messages)
                 if looks_like_refusal(raw):
-                    errors.append(f"cerebras:{model}:refused")
+                    errors.append(f"cf:{model}:refused")
                     continue
                 return clean_reply(raw)
             except Exception as e:
-                errors.append(f"cerebras:{model}:{e}")
+                errors.append(f"cf:{model}:{e}")
 
     # 2) Groq（備用）
     if GROQ_KEY:
-        groq_live = list_models("https://api.groq.com/openai/v1/models", GROQ_KEY)
-        candidates = [m for m in GROQ_MODELS if not groq_live or m in groq_live]
-        if not candidates:
-            candidates = groq_live[:5] or GROQ_MODELS
-        for model in candidates:
+        groq_url = "https://api.groq.com/openai/v1/chat/completions"
+        for model in GROQ_MODELS:
             try:
-                raw = call_chat("https://api.groq.com/openai/v1/chat/completions",
-                                GROQ_KEY, model, messages,
+                raw = call_chat(groq_url, GROQ_KEY, model, messages,
                                 {"reasoning_format": "hidden"})
                 if looks_like_refusal(raw):
                     errors.append(f"groq:{model}:refused")
