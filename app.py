@@ -94,7 +94,7 @@ def looks_like_refusal(reply):
     return False
 
 
-def call_chat(url, key, model, messages, extra=None, timeout=20, max_tokens=400):
+def call_chat(url, key, model, messages, extra=None, timeout=20, max_tokens=700):
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     body = {"model": model, "messages": messages, "max_tokens": max_tokens}
     if extra:
@@ -123,7 +123,7 @@ def ask_model(history):
             try:
                 raw = call_chat(groq_url, GROQ_KEY, model, messages,
                                 extra={"reasoning_format": "hidden"},
-                                timeout=20, max_tokens=400)
+                                timeout=20, max_tokens=700)
                 if looks_like_refusal(raw):
                     errors.append(f"groq:{model}:refused")
                     continue
