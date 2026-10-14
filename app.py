@@ -17,17 +17,18 @@ GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 cc = OpenCC("s2twp")   # 簡體 → 台灣繁體
 
 # Cloudflare Workers AI：免費、不用刷卡，Qwen/DeepSeek 中文最放得開
+# 順序 = 速度優先：8B 小模型最快 → 27B → 30B；深思考/超大模型會拖慢，放最後
 CF_MODELS = [
+    "@cf/meta/llama-3.1-8b-instruct-fp8",
     "@cf/qwen/qwen3.8-27b",
-    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "@cf/qwen/qwen3-30b-a3b-fp8",
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
 ]
 
-# Groq 當備用
+# Groq 當備用（instant 最快優先）
 GROQ_MODELS = [
-    "qwen/qwen3.8-27b",
     "llama-3.1-8b-instant",
+    "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
 ]
@@ -52,6 +53,14 @@ def send_telegram(chat_id, text):
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
     except Exception as e:
         logging.info("SEND FAIL: %s", e)
+
+
+def send_typing(chat_id):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendChatAction"
+    try:
+        requests.post(url, json={"chat_id": chat_id, "action": "typing"}, timeout=10)
+    except Exception as e:
+        logging.info("TYPING FAIL: %s", e)
 
 
 def clean_reply(reply):
@@ -80,12 +89,12 @@ def looks_like_refusal(reply):
     return False
 
 
-def call_chat(url, key, model, messages, extra=None):
+def call_chat(url, key, model, messages, extra=None, timeout=30):
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     body = {"model": model, "messages": messages}
     if extra:
         body.update(extra)
-    r = requests.post(url, json=body, headers=headers, timeout=90)
+    r = requests.post(url, json=body, headers=headers, timeout=timeout)
     data = r.json()
 
     if "choices" not in data or not data["choices"]:
@@ -107,7 +116,7 @@ def ask_model(history):
         cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/v1/chat/completions"
         for model in CF_MODELS:
             try:
-                raw = call_chat(cf_url, CF_TOKEN, model, messages)
+                raw = call_chat(cf_url, CF_TOKEN, model, messages, timeout=30)
                 if looks_like_refusal(raw):
                     errors.append(f"cf:{model}:refused")
                     continue
@@ -121,7 +130,7 @@ def ask_model(history):
         for model in GROQ_MODELS:
             try:
                 raw = call_chat(groq_url, GROQ_KEY, model, messages,
-                                {"reasoning_format": "hidden"})
+                                {"reasoning_format": "hidden"}, timeout=30)
                 if looks_like_refusal(raw):
                     errors.append(f"groq:{model}:refused")
                     continue
@@ -148,6 +157,8 @@ def webhook():
     hist = memories.get(chat_id, [])
     hist.append({"role": "user", "content": text})
     hist = hist[-30:]
+
+    send_typing(chat_id)
 
     try:
         reply = ask_model(hist)
