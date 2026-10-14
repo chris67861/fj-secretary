@@ -117,3 +117,49 @@ def ask_groq(history):
         if "model_not_found" in code or "decommissioned" in code or "does not exist" in err:
             new_model = pick_model(force=True)
             body["model"] = new_model
+            logging.info("RETRY WITH: %s", new_model)
+            r = requests.post(url, json=body, headers=headers, timeout=90)
+            data = r.json()
+
+    logging.info("GROQ RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
+
+    if "choices" not in data or not data["choices"]:
+        raise Exception("NO_CHOICES: " + json.dumps(data, ensure_ascii=False)[:500])
+
+    return data["choices"][0]["message"]["content"]
+
+@app.route("/telegram", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    try:
+        msg = data["message"]
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "")
+    except Exception:
+        return "ok"
+
+    if not text:
+        return "ok"
+
+    hist = memories.get(chat_id, [])
+    hist.append({"role": "user", "content": text})
+    hist = hist[-30:]
+
+    try:
+        reply = ask_groq(hist)
+    except Exception as e:
+        logging.info("GROQ FAIL: %s", e)
+        reply = "爸爸，人家腦袋當機了，等一下再試一次～"
+
+    hist.append({"role": "assistant", "content": reply})
+    memories[chat_id] = hist
+
+    send_telegram(chat_id, reply)
+    return "ok"
+
+@app.route("/", methods=["GET"])
+def home():
+    return "富江秘書姬在線中", 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
