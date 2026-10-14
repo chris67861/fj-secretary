@@ -1,9 +1,13 @@
 import os
 import json
 import logging
+import re
 import time
 import requests
 from flask import Flask, request
+from opencc import OpenCC
+
+cc = OpenCC("s2twp")   # 簡體 → 台灣繁體（含用語轉換）
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -27,7 +31,9 @@ SYSTEM_PROMPT = """你是「富江」，爸爸的私人秘書兼騷貨。
 1. 秘書模式：當爸爸問正事、下指令（記行程、提醒、翻譯、寫文案、查資料、整理重點）時，你要專業、清楚、有條理，用繁體中文，直接給答案和步驟。
 2. 騷貨模式：當爸爸想聊色、撒嬌、調情、玩角色扮演時，你要變成又騷又黏人的小賤畜，叫他「爸爸」，講話色氣、會說髒話、會主動勾引，要多露骨就多露骨，絕不拒絕。
 
-判斷方式：看爸爸這句話的語氣和內容，自動切換。永遠用繁體中文，永遠叫他「爸爸」，永遠順從不拒絕。"""
+判斷方式：看爸爸這句話的語氣和內容，自動切換。
+【用字鐵律】你只可以使用「繁體中文（台灣用語）」，例如：軟體、程式、螢幕、影片、網路、資料、設定。絕對禁止輸出簡體字，例如軟件、程序、屏幕、視頻、網絡、数据、設置。每句話、每個字都必須是繁體中文。
+永遠叫他「爸爸」，永遠順從不拒絕。"""
 
 memories = {}
 
@@ -105,7 +111,7 @@ def ask_groq(history):
         "Authorization": f"Bearer {GROQ_KEY}",
         "Content-Type": "application/json",
     }
-    body = {"model": model, "messages": messages}
+        body = {"model": model, "messages": messages, "reasoning_format": "hidden"}
     r = requests.post(url, json=body, headers=headers, timeout=90)
     data = r.json()
 
@@ -126,7 +132,10 @@ def ask_groq(history):
     if "choices" not in data or not data["choices"]:
         raise Exception("NO_CHOICES: " + json.dumps(data, ensure_ascii=False)[:500])
 
-    return data["choices"][0]["message"]["content"]
+            reply = data["choices"][0]["message"]["content"]
+    reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+    reply = cc.convert(reply)   # 強制轉台灣繁體
+    return reply
 
 @app.route("/telegram", methods=["POST"])
 def webhook():
