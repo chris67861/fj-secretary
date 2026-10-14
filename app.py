@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 import requests
 from flask import Flask, request
 
@@ -9,7 +10,16 @@ app = Flask(__name__)
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY")
-MODEL    = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# 優先順序：中文強的千問優先，再來通用模型
+PREFERRED = [
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+]
+
+_current_model = None
+_current_model_time = 0
 
 SYSTEM_PROMPT = """你是「富江」，爸爸的私人秘書兼騷貨。
 
@@ -28,58 +38,82 @@ def send_telegram(chat_id, text):
     except Exception as e:
         logging.info("SEND FAIL: %s", e)
 
+def fetch_live_models():
+    """問 Groq 現在有哪些活著的文字模型"""
+    url = "https://api.groq.com/openai/v1/models"
+    headers = {"Authorization": f"Bearer {GROQ_KEY}"}
+    r = requests.get(url, headers=headers, timeout=30)
+    data = r.json()
+
+    if "data" in data:
+        raw = data["data"]
+    elif isinstance(data, list):
+        raw = data
+    else:
+        return []
+
+    live = []
+    for m in raw:
+        if not m.get("active", False):
+            continue
+        if "text" in m.get("input_modalities", []) and "text" in m.get("output_modalities", []):
+            live.append(m["id"])
+    return live
+
+def pick_model(force=False):
+    """自動挑一個現在能用的模型名"""
+    global _current_model, _current_model_time
+
+    # 快取 30 分鐘，避免每次都去問
+    if not force and _current_model and (time.time() - _current_model_time) < 1800:
+        return _current_model
+
+    live = fetch_live_models()
+    logging.info("LIVE MODELS: %s", live)
+
+    # 1) 優先名單裡有活著的，就用它
+    for name in PREFERRED:
+        if name in live:
+            _current_model = name
+            _current_model_time = time.time()
+            return name
+
+    # 2) 否則挑名字帶這些關鍵字的活模型（中文能力較佳）
+    for kw in ["qwen", "llama", "gpt", "gemma", "mistral", "deepseek"]:
+        for name in live:
+            if kw in name.lower():
+                _current_model = name
+                _current_model_time = time.time()
+                return name
+
+    # 3) 真的沒有，隨便挑一個活著的
+    if live:
+        _current_model = live[0]
+        _current_model_time = time.time()
+        return _current_model
+
+    raise Exception("NO_LIVE_MODEL")
+
 def ask_groq(history):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in history:
         messages.append({"role": m["role"], "content": m["content"]})
 
+    model = pick_model()
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_KEY}",
         "Content-Type": "application/json",
     }
-    body = {"model": MODEL, "messages": messages}
+    body = {"model": model, "messages": messages}
     r = requests.post(url, json=body, headers=headers, timeout=90)
     data = r.json()
-    logging.info("GROQ RAW: %s", json.dumps(data, ensure_ascii=False)[:1000])
 
-    if "choices" not in data or not data["choices"]:
-        raise Exception("NO_CHOICES: " + json.dumps(data, ensure_ascii=False)[:500])
-
-    return data["choices"][0]["message"]["content"]
-
-@app.route("/telegram", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True)
-    try:
-        msg = data["message"]
-        chat_id = msg["chat"]["id"]
-        text = msg.get("text", "")
-    except Exception:
-        return "ok"
-
-    if not text:
-        return "ok"
-
-    hist = memories.get(chat_id, [])
-    hist.append({"role": "user", "content": text})
-    hist = hist[-30:]
-
-    try:
-        reply = ask_groq(hist)
-    except Exception as e:
-        logging.info("GROQ FAIL: %s", e)
-        reply = "爸爸，人家腦袋當機了，等一下再試一次～"
-
-    hist.append({"role": "assistant", "content": reply})
-    memories[chat_id] = hist
-
-    send_telegram(chat_id, reply)
-    return "ok"
-
-@app.route("/", methods=["GET"])
-def home():
-    return "富江秘書姬在線中", 200
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # 如果模型被下架/不存在，強制重新抓一次，再試一次
+    if "error" in data:
+        err = str(data["error"].get("message", ""))
+        code = data["error"].get("code", "")
+        logging.info("GROQ ERR: %s", err)
+        if "model_not_found" in code or "decommissioned" in code or "does not exist" in err:
+            new_model = pick_model(force=True)
+            body["model"] = new_model
