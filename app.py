@@ -52,10 +52,18 @@ def send_typing(chat_id):
 
 
 def clean_reply(reply):
-    # 只做兩件必要的輕活：去思考標籤 + 繁簡轉換。
-    # 括號、星號都保留，換速度。
+    # 去思考標籤 + 去括號星號 + 繁簡轉換。
+    # 正則刪括號是微秒級，不影響速度；慢的是模型吐字，不是這步。
     reply = re.sub(r"<think[^>]*>.*?</think>", "", reply, flags=re.DOTALL)
     reply = re.sub(r"<thinking[^>]*>.*?</thinking>", "", reply, flags=re.DOTALL)
+    reply = re.sub(r"\([^()]*\)", "", reply)
+    reply = re.sub(r"（[^（）]*）", "", reply)
+    reply = re.sub(r"\*[^*]*\*", "", reply)
+    reply = re.sub(r"\[[^\[\]]*\]", "", reply)
+    reply = re.sub(r"｛[^｛｝]*｝", "", reply)
+    reply = re.sub(r"【.*?】", "", reply, flags=re.DOTALL)
+    reply = re.sub(r"　+", " ", reply)
+    reply = re.sub(r"[ \t]+", " ", reply)
     reply = re.sub(r"\n{3,}", "\n\n", reply)
     reply = reply.strip()
     reply = cc.convert(reply)
