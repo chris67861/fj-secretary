@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>寶貝秘書姬</title>
+<style>
+  :root {
+    --bg: #1a1024;
+    --card: #241636;
+    --bubble-her: #3a2352;
+    --bubble-you: #8a2b5c;
+    --text: #f3e9ff;
+    --accent: #ff6fa5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: linear-gradient(135deg, #8a2b5c, #3a2352);
+    padding: 14px 18px;
+    text-align: center;
+    font-weight: bold;
+    font-size: 18px;
+    letter-spacing: 2px;
+  }
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .msg {
+    max-width: 78%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .her { align-self: flex-start; background: var(--bubble-her); border-bottom-left-radius: 4px; }
+  .you { align-self: flex-end; background: var(--bubble-you); border-bottom-right-radius: 4px; }
+  .think {
+    align-self: flex-start;
+    font-size: 12px;
+    color: #c9b3e0;
+    background: rgba(255,255,255,0.06);
+    padding: 6px 12px;
+    border-radius: 12px;
+    max-width: 85%;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #add-tip {
+    position: fixed;
+    top: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 92%;
+    max-width: 360px;
+    background: #3a2352;
+    border: 1px solid #ff6fa5;
+    border-radius: 16px;
+    padding: 14px 16px;
+    z-index: 50;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    display: none;
+  }
+  #add-tip .close {
+    float: right;
+    background: none;
+    border: none;
+    color: #ff6fa5;
+    font-size: 18px;
+    cursor: pointer;
+  }
+  footer {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    background: var(--card);
+  }
+  input {
+    flex: 1;
+    padding: 12px 14px;
+    border: 1px solid #5a3a7a;
+    border-radius: 24px;
+    background: #1a1024;
+    color: var(--text);
+    font-size: 15px;
+    outline: none;
+  }
+  button {
+    padding: 12px 20px;
+    border: none;
+    border-radius: 24px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: bold;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; }
+</style>
+</head>
+<body>
+<header>💕 寶貝秘書姬 💕</header>
+<div id="lock" style="display:none; padding:40px 20px; text-align:center; flex:1;">
+  <h2 style="margin-bottom:16px;">🔒 這是爸爸專屬的房間</h2>
+  <input id="pwd" type="password" placeholder="輸入密鑰" style="width:260px; padding:12px; border-radius:24px; border:1px solid #5a3a7a; background:#1a1024; color:#f3e9ff; text-align:center; outline:none;">
+  <br><br>
+  <button onclick="unlock()" style="padding:12px 28px; border:none; border-radius:24px; background:#ff6fa5; color:#fff; font-weight:bold; cursor:pointer;">進來吧</button>
+</div>
+<div id="log" style="display:none; flex:1; overflow-y:auto; padding:16px; flex-direction:column; gap:10px;"></div>
+<div id="add-tip">
+  <button class="close" onclick="dismissTip()">✕</button>
+  <b>📱 把人家加到主畫面，像 App 一樣用</b><br><br>
+  <span id="tip-ios" style="display:none;">
+    ① 點瀏覽器下方的 <b>分享鈕</b><br>
+    ② 選 <b>「加到主畫面」</b><br>
+    ③ 完成！以後一戳就開
+  </span>
+  <span id="tip-android" style="display:none;">
+    ① 點瀏覽器右上角 <b>⋮ 選單</b><br>
+    ② 選 <b>「加到主畫面」</b><br>
+    ③ 完成！以後一戳就開
+  </span>
+  <span id="tip-other" style="display:none;">
+    用瀏覽器的「加到主畫面」功能，把人家的入口放到桌面，以後一戳就開。
+  </span>
+</div>
+<footer>
+  <input id="inp" type="text" placeholder="爸爸，跟人家說說話…" autocomplete="off">
+  <button id="send">送出</button>
+</footer>
+<script>
+  // 改這裡：你的 Render 服務網址
+  const API = "https://fj-secretary.onrender.com/chat";
+  const UNLOCK_API = "https://fj-secretary.onrender.com/unlock";
+  // 記憶鑰匙：換一個就是你專屬的聊天室
+  const CHAT_ID = "my-secret-room";
+  // 前端不存密鑰：只有使用者輸入的密碼，真密鑰活在 Render 裡。
+
+  const log = document.getElementById("log");
+  const inp = document.getElementById("inp");
+  const send = document.getElementById("send");
+  const lock = document.getElementById("lock");
+  const pwd = document.getElementById("pwd");
+
+  let TOKEN = localStorage.getItem("fj_token") || "";
+
+  function showLock() {
+    lock.style.display = "block";
+    log.style.display = "none";
+  }
+  function showChat() {
+    lock.style.display = "none";
+    log.style.display = "flex";
+    inp.focus();
+  }
+
+  async function unlock() {
+    const p = pwd.value.trim();
+    if (!p) return;
+    try {
+      const res = await fetch(UNLOCK_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: p })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        TOKEN = data.token;
+        localStorage.setItem("fj_token", TOKEN);
+        pwd.value = "";
+        showChat();
+      } else {
+        pwd.value = "";
+        pwd.placeholder = "密鑰不對，再想想";
+      }
+    } catch (e) {
+      pwd.value = "";
+      pwd.placeholder = "連不上，等一下再試";
+    }
+  }
+
+  // 有令牌就直接開門；令牌失效會在聊天時被擋回鎖門畫面
+  if (TOKEN) {
+    showChat();
+  } else {
+    showLock();
+  }
+  pwd.addEventListener("keydown", e => { if (e.key === "Enter") unlock(); });
+
+  // 「加到主畫面」引導：第一次開顯示，看完點掉 30 天不再煩
+  const tip = document.getElementById("add-tip");
+  function dismissTip() {
+    tip.style.display = "none";
+    localStorage.setItem("fj_tip", Date.now());
+  }
+  function maybeShowTip() {
+    if (localStorage.getItem("fj_tip")) return;
+    const ua = navigator.userAgent;
+    const isIOS = /iPhone|iPad|iPod/.test(ua);
+    const isAndroid = /Android/.test(ua);
+    if (isIOS) {
+      document.getElementById("tip-ios").style.display = "inline";
+    } else if (isAndroid) {
+      document.getElementById("tip-android").style.display = "inline";
+    } else {
+      document.getElementById("tip-other").style.display = "inline";
+    }
+    tip.style.display = "block";
+    setTimeout(() => { tip.style.display = "none"; }, 8000);
+  }
+  window.addEventListener("load", () => { setTimeout(maybeShowTip, 600); });
+
+  function addMsg(text, who) {
+    const d = document.createElement("div");
+    d.className = "msg " + who;
+    d.textContent = text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+  function addThink(text) {
+    const d = document.createElement("div");
+    d.className = "think";
+    d.textContent = "💭 思考中…\n" + text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function talk() {
+    const text = inp.value.trim();
+    if (!text) return;
+    inp.value = "";
+    addMsg(text, "you");
+    send.disabled = true;
+
+    try {
+      const res = await fetch(API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: CHAT_ID, text: text, token: TOKEN })
+      });
+      if (res.status === 403) {
+        // 令牌失效，回鎖門畫面
+        TOKEN = "";
+        localStorage.removeItem("fj_token");
+        showLock();
+        addMsg("爸爸，令牌過期了，再輸一次密鑰嘛～", "her");
+        return;
+      }
+      const data = await res.json();
+      if (data.reasoning && data.reasoning.length >= 2) addThink(data.reasoning);
+      if (data.reply) addMsg(data.reply, "her");
+      else addMsg("爸爸，人家腦袋當機了，等一下再試一次～", "her");
+    } catch (e) {
+      addMsg("連線失敗，等一下再試～", "her");
+    }
+    send.disabled = false;
+    inp.focus();
+  }
+
+  send.addEventListener("click", talk);
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") talk(); });
+  inp.focus();
+</script>
+</body>
+</html>
