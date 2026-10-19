@@ -221,7 +221,13 @@ def call_chat(url, key, model, messages, extra=None, timeout=60, max_tokens=1638
         body = {"model": model, "messages": messages, "max_completion_tokens": max_tokens}
     if extra:
         body.update(extra)
-    r = requests.post(url, json=body, headers=headers, timeout=timeout)
+    # 限速避讓：撞到 429 就等 2.5 秒再試一次
+    for attempt in (1, 2):
+        r = requests.post(url, json=body, headers=headers, timeout=timeout)
+        if r.status_code == 429 and attempt == 1:
+            time.sleep(2.5)
+            continue
+        break
     data = r.json()
 
     if "choices" not in data or not data["choices"]:
@@ -243,6 +249,23 @@ MEM_KEEP = 20     # 壓縮後保留最近 20 條
 mem_summary = {}  # chat_id -> 舊對話摘要（壓縮過的長期記憶）
 
 
+def quick_ask(prompt, max_tokens=800):
+    # 輕量單輪問模型：搜尋摘要、網頁整理用，失敗回 None
+    if not GROQ_KEY:
+        return None
+    groq_url = "https://api.groq.com/openai/v1/chat/completions"
+    for model in GROQ_MODELS[:2]:
+        try:
+            c, _ = call_chat(groq_url, GROQ_KEY, model,
+                             [{"role": "user", "content": prompt}],
+                             timeout=60, max_tokens=max_tokens)
+            if c and not looks_like_refusal(c):
+                return c.strip()
+        except Exception:
+            continue
+    return None
+
+
 def summarize_history(old_summary, turns):
     # 把舊對話壓成 300 字摘要，失敗就保留舊摘要
     text = "\n".join(
@@ -254,21 +277,53 @@ def summarize_history(old_summary, turns):
         "要保留：稱呼習慣、爸爸的喜好、進行中的事、寶貝承諾過的事、重要的名字和數字。"
         + text
     )
-    msgs = [{"role": "user", "content": prompt}]
+    c = quick_ask(prompt, 800)
+    return c if c else old_summary
+
+
+# ── 分身的手：/搜 網頁搜尋、/查 網頁抓取，都免費不用 key ──
+def web_search(q):
+    # DuckDuckGo 即時答案 + 維基百科搜尋，兩路免 key
+    results = []
     try:
-        if GROQ_KEY:
-            groq_url = "https://api.groq.com/openai/v1/chat/completions"
-            for model in GROQ_MODELS[:2]:
-                try:
-                    c, _ = call_chat(groq_url, GROQ_KEY, model, msgs,
-                                     timeout=60, max_tokens=800)
-                    if c and not looks_like_refusal(c):
-                        return c.strip()
-                except Exception:
-                    continue
+        r = requests.get(
+            "https://api.duckduckgo.com/",
+            params={"q": q, "format": "json", "no_html": 1, "skip_disambig": 1},
+            headers={"User-Agent": "Mozilla/5.0 (bot)"},
+            timeout=15,
+        )
+        data = r.json()
+        if data.get("AbstractText"):
+            results.append(("摘要", data["AbstractText"]))
+        for t in data.get("RelatedTopics", [])[:5]:
+            if isinstance(t, dict) and t.get("Text"):
+                results.append((t.get("FirstURL", ""), t["Text"]))
     except Exception:
         pass
-    return old_summary
+    try:
+        r = requests.get(
+            "https://zh.wikipedia.org/w/api.php",
+            params={"action": "query", "list": "search", "srsearch": q,
+                    "format": "json", "srlimit": 3},
+            timeout=15,
+        )
+        data = r.json()
+        for item in data.get("query", {}).get("search", []):
+            title = item.get("title", "")
+            snippet = re.sub(r"<[^>]+>", "", item.get("snippet", ""))
+            if title and snippet:
+                results.append((f"https://zh.wikipedia.org/wiki/{quote(title)}", snippet))
+    except Exception:
+        pass
+    return results
+
+
+def fetch_url(url):
+    # 用 jina.ai 閱讀器抓網頁轉成文字，免 key
+    r = requests.get("https://r.jina.ai/" + url,
+                     headers={"User-Agent": "Mozilla/5.0 (bot)"},
+                     timeout=60)
+    return r.text[:6000] if r.status_code == 200 else ""
 
 
 def ask_model(history, summary=""):
@@ -354,6 +409,21 @@ def ask_model(history, summary=""):
         if r:
             return r
 
+    # ── 當機保底：全部陣亡前，用「簡短模式」再搶救一次 ──
+    # 上限 800 token，寫得快、撞限速機率低，至少回爸爸一句話不當機
+    if GROQ_KEY:
+        groq_url = "https://api.groq.com/openai/v1/chat/completions"
+        msgs = list(messages)
+        msgs.append({"role": "assistant", "content": PREFILL})
+        for model in GROQ_MODELS[:2]:
+            try:
+                c, r = call_chat(groq_url, GROQ_KEY, model, msgs,
+                                 timeout=45, max_tokens=800)
+                if c and not looks_like_refusal(c):
+                    return clean_reply(PREFILL + c), clean_reply(r)
+            except Exception as e:
+                errors.append(f"{model}:short:{e}")
+
     raise Exception("ALL_FAILED: " + "; ".join(errors))
 
 
@@ -379,10 +449,20 @@ def make_image(prompt):
     return url
 
 
+# Telegram 重送去重：記住最後處理過的 update_id，重送的同一則直接跳過
+LAST_UPDATE_ID = 0
+
+
 @app.route("/telegram", methods=["POST"])
 def webhook():
-    global MODEL_PREF, COLAB_URL, PENTEST_MODE
+    global MODEL_PREF, COLAB_URL, PENTEST_MODE, LAST_UPDATE_ID
     data = request.get_json(force=True)
+    # 去重：Telegram 覺得我們回太慢會重送同一則，跳過不重複處理
+    uid = data.get("update_id", 0)
+    if uid and uid <= LAST_UPDATE_ID:
+        return "ok"
+    if uid:
+        LAST_UPDATE_ID = uid
     try:
         msg = data["message"]
         chat_id = msg["chat"]["id"]
@@ -417,7 +497,10 @@ def webhook():
             "/接colab 網址 → 接上 100% 不拒色的去拒絕模型\n"
             "/断colab → 斷開 Colab，回落千問\n"
             "/開滲透 → 切滲透寶貝（紅隊模式）\n"
-            "/關滲透 → 切回色色寶貝\n\n"
+            "/關滲透 → 切回色色寶貝\n"
+            "/搜 關鍵字 → 上網搜尋\n"
+            "/查 網址 → 抓網頁整理重點\n"
+            "/清記憶 → 清空對話記憶\n\n"
             "重啟後會回到 Render 環境變數 MODEL_PREF 的預設值。"
         ))
         return "ok"
@@ -462,6 +545,52 @@ def webhook():
         memories.pop(chat_id, None)
         mem_summary.pop(chat_id, None)
         send_telegram(chat_id, "爸爸，記憶清乾淨了～人家現在只記得現在的你。")
+        return "ok"
+
+    # ── 分身的手：/搜 關鍵字 上網搜、/查 網址 抓網頁 ──
+    if text.startswith("/搜") or text.startswith("/查"):
+        q = text[2:].strip()
+        if not q:
+            send_telegram(chat_id, "用法：\n/搜 關鍵字（例：/搜 颱風動態）\n/查 網址（例：/查 https://news.xxx.com）")
+            return "ok"
+        send_typing(chat_id)
+        if text.startswith("/搜"):
+            try:
+                results = web_search(q)
+                if not results:
+                    send_telegram(chat_id, f"爸爸，人家沒搜到「{q}」的結果，換個關鍵字試試？")
+                    return "ok"
+                lines = [f"🔍 「{q}」搜尋結果："]
+                for title, body in results[:8]:
+                    body = (body or "").strip()
+                    if not body:
+                        continue
+                    if title.startswith("http"):
+                        lines.append(f"• {body[:200]}\n  {title}")
+                    else:
+                        lines.append(f"• {title}：{body[:200]}")
+                send_telegram(chat_id, "\n\n".join(lines)[:3900])
+            except Exception as e:
+                logging.info("SEARCH FAIL: %s", e)
+                send_telegram(chat_id, "爸爸，搜尋失敗了，等一下再試～")
+            return "ok"
+        # /查 網址
+        if not q.startswith("http"):
+            q = "https://" + q
+        try:
+            page = fetch_url(q)
+            if not page:
+                send_telegram(chat_id, "爸爸，這網頁人家抓不到，可能是要登入或擋爬蟲。")
+                return "ok"
+            summary = quick_ask(
+                "把以下網頁內容用繁體中文整理成重點摘要（300 字以內），列出關鍵資訊：\n" + page,
+                800,
+            )
+            out = f"📄 「{q}」重點：\n" + summary if summary else page[:3800]
+            send_telegram(chat_id, out[:3900])
+        except Exception as e:
+            logging.info("FETCH FAIL: %s", e)
+            send_telegram(chat_id, "爸爸，抓網頁失敗了，等一下再試～")
         return "ok"
 
     # ── 畫圖指令：/畫 描述（或 /画 /圖 /图 /img）→ 直接回一張圖 ──
