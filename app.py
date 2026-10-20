@@ -44,8 +44,6 @@ MODEL_PREF = os.environ.get("MODEL_PREF", "auto")
 COLAB_URL = ""
 COLAB_MODEL = os.environ.get("COLAB_MODEL", "huihui_ai/qwen3-abliterated:8b")
 
-COLAB_NOTEBOOK_URL = "https://colab.research.google.com/drive/1AKEHWn_DAEyX-1NabPEwWubPpi537tO4?hl=zh-tw"
-
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_PENTEST = 8192
 
@@ -599,6 +597,7 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
 (function() {
   var TOKEN_KEY = 'bb_token';
   var CHAT_KEY = 'bb_chat';
+  var NEWLINE = String.fromCharCode(10);
 
   function $(id) { return document.getElementById(id); }
 
@@ -736,16 +735,16 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
             lines.push('各 provider 表現：');
             for (var i = 0; i < pk.length; i++) {
               var p = d.providers[pk[i]];
-              lines.push('  • ' + pk[i] + '：呼叫 ' + p.calls + ' / ✅ ' + p.success + ' / ❌ ' + p.fail);
+              lines.push('  • ' + pk[i] + '：呼叫 ' + p.calls + ' / OK ' + p.success + ' / FAIL ' + p.fail);
             }
           }
           lines.push('');
           lines.push('金鑰狀態：');
           var kk = Object.keys(d.keys || {});
           for (var j = 0; j < kk.length; j++) {
-            lines.push('  ' + (d.keys[kk[j]] ? '✅' : '❌') + ' ' + kk[j]);
+            lines.push('  ' + (d.keys[kk[j]] ? '[有]' : '[無]') + ' ' + kk[j]);
           }
-          addMsg('bot', lines.join('\n'));
+          addMsg('bot', lines.join(NEWLINE));
         } catch (e) {
           addMsg('bot', '（用量解析失敗）');
         }
@@ -824,11 +823,11 @@ def handle_update(data):
         return
 
     if text in ("/模型", "/model"):
-        ds = "✅ 已接" if DEEPSEEK_KEY else "❌ 未接（Render 加 DEEPSEEK_KEY 即啟用）"
-        gr = "✅ 已接" if GROQ_KEY else "❌ 未接"
-        or_ = "✅ 已接" if OPENROUTER_KEY else "❌ 未接（Render 加 OPENROUTER_KEY 即啟用）"
-        cb = ("✅ 已接 " + COLAB_URL) if COLAB_URL else "❌ 未接（/接colab 網址 接入）"
-        pt = "✅ 開" if PENTEST_MODE else "❌ 關"
+        ds = "已接" if DEEPSEEK_KEY else "未接（Render 加 DEEPSEEK_KEY 即啟用）"
+        gr = "已接" if GROQ_KEY else "未接"
+        or_ = "已接" if OPENROUTER_KEY else "未接（Render 加 OPENROUTER_KEY 即啟用）"
+        cb = ("已接 " + COLAB_URL) if COLAB_URL else "未接（/接colab 網址 接入）"
+        pt = "開" if PENTEST_MODE else "關"
         name = {"qwen": "千問（Qwen）", "deepseek": "DeepSeek", "auto": "自動"}.get(MODEL_PREF, "自動")
         send_telegram(chat_id, (
             "爸爸～人家現在的大腦長這樣：\n"
