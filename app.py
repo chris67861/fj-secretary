@@ -607,7 +607,10 @@ def webhook():
         send_telegram(chat_id, "爸爸，切回自動了～哪個通就用哪個。")
         return "ok"
         
-        if text == "/清記憶": # 直接从 OrderedDict 中移除
+            # ... (前面的 /用自動 等指令不變) ...
+
+    if text == "/清記憶":
+        # 【關鍵修正】確保下面兩行 if 都向右縮進 4 個空格（相對於 def webhook()）
         if chat_id in memories:
             del memories[chat_id]
         if chat_id in mem_summary:
@@ -615,6 +618,7 @@ def webhook():
         send_telegram(chat_id, "爸爸，記憶清乾淨了～人家現在只記得現在的你。")
         return "ok"
 
+    # ... (後續 /搜 /查 等指令不變) ...
     # ── 分身的手：/搜 關鍵字 上網搜、/查 網址 抓網頁 ──
     if text.startswith("/搜") or text.startswith("/查"):
         q = text[2:].strip()
