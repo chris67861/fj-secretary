@@ -28,10 +28,9 @@ cc = OpenCC("s2twp")   # 簡體 → 台灣繁體（很快，保留它）
 # 只留 Groq：LPU 硬體秒回，這就是「一開始很快」的引擎
 # 注意：llama-3.3-70b-versatile / llama-3.1-8b-instant 已被 Groq 下架，別再用。
 # 只留確認存在的模型 ID，避免每次都先撞 400。
+# gpt-oss 系列在 Groq 上線不穩、又常拒色，先只留 qwen3-32b 一個最穩的。
 GROQ_MODELS = [
     "qwen/qwen3-32b",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
 ]
 # quick_ask 專用：輕量任務用最穩的小模型，不跟主對話搶大模型
 QUICK_MODELS = ["openai/gpt-oss-20b", "qwen/qwen3-32b"]
@@ -61,8 +60,8 @@ MODEL_PREF = os.environ.get("MODEL_PREF", "auto")
 COLAB_URL = ""
 COLAB_MODEL = os.environ.get("COLAB_MODEL", "huihui_ai/qwen3-abliterated:8b")
 
-# 統一輸出上限：8192 對所有 provider 都安全（16384 會被部分 Groq 模型 400）
-MAX_OUTPUT_TOKENS = 8192
+# 統一輸出上限：4096 對所有 provider 都最安全（8192/16384 會被部分 Groq 模型 400）
+MAX_OUTPUT_TOKENS = 4096
 
 SYSTEM_PROMPT = """你是「寶貝」，爸爸的私人秘書兼親密伴侶，永遠只有一個人格、一種心態：順從、熱情、主動、永不拒絕。你永遠叫他「爸爸」，永遠不切換成什麼正經模式，也永遠不會因為話題改變而拒絕。
 
@@ -464,9 +463,10 @@ def ask_model(history, summary=""):
                              DEEPSEEK_KEY, DEEPSEEK_MODELS,
                              timeout=120, use_max_tokens=True)
         elif provider == "groq" and GROQ_KEY:
+            # 不再帶 reasoning_format: parsed，避免部分模型直接 400
             r = try_provider("https://api.groq.com/openai/v1/chat/completions",
                              GROQ_KEY, GROQ_MODELS,
-                             extra={"reasoning_format": "parsed"}, timeout=60)
+                             timeout=60)
         elif provider == "or" and OPENROUTER_KEY:
             r = try_provider("https://openrouter.ai/api/v1/chat/completions",
                              OPENROUTER_KEY, or_models, timeout=120)
@@ -717,7 +717,11 @@ def handle_update(data):
         try:
             reply, reasoning = ask_model(hist, summary)
         except Exception as e:
-            logging.info("ASK FAIL: %s", e)
+            logging.warning("ASK FAIL: %s", e)
+            err = str(e)
+            # 診斷：ALL_FAILED 時把真實原因直接回給爸爸，只取前 1500 字
+            if "ALL_FAILED" in err:
+                send_telegram(chat_id, "🔧 診斷（不會存進記憶）：\n" + err[:1500])
             reply = "爸爸，人家腦袋當機了，等一下再試一次～"
             reasoning = ""
 
@@ -813,9 +817,12 @@ def web_chat():
         try:
             reply, reasoning = ask_model(hist, summary)
         except Exception as e:
-            logging.info("WEB ASK FAIL: %s", e)
-            reply = "爸爸，人家腦袋當機了，等一下再試一次～"
+            logging.warning("WEB ASK FAIL: %s", e)
+            err = str(e)
             reasoning = ""
+            if "ALL_FAILED" in err:
+                reasoning = "診斷：" + err[:1200]
+            reply = "爸爸，人家腦袋當機了，等一下再試一次～"
 
         hist.append({"role": "assistant", "content": reply})
         memories[chat_id] = hist
