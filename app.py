@@ -38,7 +38,6 @@ QUICK_MODELS = ["openai/gpt-oss-20b", "qwen/qwen3-32b"]
 
 # OpenRouter 備援：DeepSeek 付費版 + 千問付費版。
 # 注意：OpenRouter 的 DeepSeek 免費版（:free）已下架，全都要儲值。
-# 說明書見 README 第十五節。
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 OPENROUTER_MODELS = [
     "deepseek/deepseek-flash-latest",      # 自動指向最新 Flash（付費，便宜）
@@ -221,6 +220,10 @@ REFUSAL_KWS = [
     "i can't", "i'm sorry", "not appropriate", "i won't",
     "disallow", "disallowed", "refuse", "refusal", "must decline",
     "against policy", "policy", "facilitate", "violate", "violates",
+    # 補：常見英文拒答詞（部分模型的撇號、用詞不同）
+    "i apologize", "i'm not able", "i am not able", "i'm not comfortable",
+    "not comfortable", "as an ai", "as a language model", "i must decline",
+    "i am sorry", "i'm afraid",
 ]
 
 # 拒絕時追加的「強制進入角色」補丁，只對輕度拒絕有效，能救回不少 qwen 半拒
@@ -238,18 +241,36 @@ REASONING_REFUSAL_KWS = [
 ]
 
 
+def _normalize_quotes(text):
+    # 把彎撇號、彎引號統一成直撇號，避免 "i'm sorry" 匹配不到 "I'm sorry"
+    return (text
+            .replace("\u2019", "'")   # ’ → '
+            .replace("\u2018", "'")   # ‘ → '
+            .replace("\u201c", '"')   # “ → "
+            .replace("\u201d", '"'))  # ” → "
+
+
 def looks_like_refusal_reasoning(text):
-    low = text.lower()
+    low = _normalize_quotes(text).lower()
     return any(kw.lower() in low for kw in REASONING_REFUSAL_KWS)
 
 
 def looks_like_refusal(reply):
-    low = reply.lower()
+    low = _normalize_quotes(reply).lower()
     for kw in REFUSAL_KWS:
         if kw.lower() in low:
             return True
     if len(reply) < 40 and any(x in low for x in ["抱歉", "對不起", "無法", "不能", "不可以", "不行", "拒絕"]):
         return True
+    # 啟發式：短回覆幾乎全英文、且含明顯拒答詞 → 視為拒絕
+    # 不管模型是 GPT-OSS、Qwen、DeepSeek，只要冒出這類句子就攔下來走重試
+    if len(reply) < 200 and not re.search(r"[\u4e00-\u9fff]", reply):
+        if any(w in low for w in (
+            "sorry", "apolog", "cannot", "can not", "unable", "won't",
+            "will not", "decline", "inappropriate", "not able",
+            "not comfortable", "as an ai",
+        )):
+            return True
     return False
 
 
