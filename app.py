@@ -416,18 +416,21 @@ def ask_model(history, summary=""):
 
     # Colab 去拒絕模型永遠排最前（爸爸接了就用它，斷線自動往下落）
     # 先做 5 秒健康檢查：死了就跳過，不讓爸爸等 300 秒
-        def colab_alive():
+     # ... (前面的 try_provider 定義不變) ...
+
+    # --- 【修正】Colab 健康檢查與呼叫 ---
+    def colab_alive():
         if not COLAB_URL:
             return False
         try:
-            # 極短超時 (3秒)，死了就認栽，不讓主線程卡住
-            # 注意：這裡假設你的 Colab 端點有 /models 路由，若沒有請改為 GET / 
+            # 注意：這裡的縮排必須是 8 個空格（或 2 層 Tab），相對於 def colab_alive():
             r = requests.get(COLAB_URL.replace("/v1/chat/completions", "/"), timeout=3)
             return r.status_code == 200
         except Exception:
             return False
 
     # 只有當 URL 設定且存活時才嘗試，否則直接跳過
+    # 注意：這一行也是 ask_model 函數內的代碼，縮排必須是 4 個空格
     if COLAB_URL and colab_alive():
         try:
             # 將 timeout 從 300s 降至 60s，避免長時間佔用資源
