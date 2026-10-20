@@ -399,13 +399,14 @@ WEBCHAT_HTML = """<!DOCTYPE html>
 <style>
 * { box-sizing: border-box; }
 body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
-#bb-app { max-width: 720px; margin: 0 auto; padding: 16px; }
-#bb-unlock { background: #fff0f5; padding: 32px; border-radius: 16px; text-align: center; border: 2px solid #ffd6e0; margin-top: 40px; }
+#bb-app { max-width: 1020px; margin: 0 auto; padding: 16px; }
+#bb-unlock { background: #fff0f5; padding: 32px; border-radius: 16px; text-align: center; border: 2px solid #ffd6e0; margin-top: 40px; max-width: 480px; margin-left: auto; margin-right: auto; }
 #bb-unlock h3 { margin: 0 0 16px; color: #d6336c; font-size: 20px; }
 #bb-unlock input { padding: 12px 16px; font-size: 16px; border: 2px solid #ffb3c7; border-radius: 10px; width: 100%; max-width: 300px; }
 #bb-unlock button { padding: 12px 32px; margin-top: 12px; background: #d6336c; color: white; border: none; border-radius: 10px; font-size: 16px; cursor: pointer; }
 #bb-unlock button:disabled { opacity: 0.6; cursor: not-allowed; }
-#bb-chat { display: none; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); overflow: hidden; }
+#bb-layout { display: none; gap: 16px; align-items: flex-start; }
+#bb-chat { flex: 1; min-width: 0; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); overflow: hidden; }
 #bb-header { background: linear-gradient(135deg, #ff6b9d, #c44569); color: white; padding: 16px 20px; font-weight: bold; font-size: 17px; }
 #bb-msgs { height: 480px; overflow-y: auto; padding: 20px; background: #fff8fa; }
 .bb-msg { margin-bottom: 14px; display: flex; }
@@ -420,16 +421,26 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
 #bb-send { padding: 12px 28px; margin-left: 8px; background: #d6336c; color: white; border: none; border-radius: 10px; font-size: 15px; cursor: pointer; }
 #bb-send:disabled { opacity: 0.5; cursor: not-allowed; }
 #bb-err { color: #c0392b; margin-top: 10px; font-size: 14px; min-height: 20px; }
-#bb-cmds { border-top: 1px solid #ffd6e0; background: #fffafc; }
-#bb-cmds-toggle { display: block; width: 100%; padding: 10px 16px; background: #fffafc; border: none; color: #d6336c; font-size: 14px; cursor: pointer; text-align: left; font-family: inherit; }
-#bb-cmds-toggle:hover { background: #fff0f5; }
-#bb-cmds-list { display: none; padding: 4px 16px 12px; max-height: 280px; overflow-y: auto; }
-#bb-cmds-list.open { display: block; }
-.bb-cmd-hint { padding: 6px 8px 10px; font-size: 12px; color: #999; text-align: center; border-bottom: 1px dashed #ffe4ec; margin-bottom: 6px; }
-.bb-cmd { display: flex; gap: 10px; align-items: baseline; padding: 7px 8px; font-size: 13px; line-height: 1.5; cursor: pointer; border-radius: 6px; }
+
+#bb-cmds { width: 270px; flex-shrink: 0; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); overflow: hidden; }
+#bb-cmds-header { background: linear-gradient(135deg, #ff6b9d, #c44569); color: white; padding: 16px 20px; font-weight: bold; font-size: 17px; }
+#bb-cmds-toggle { display: none; }
+#bb-cmds-list { padding: 8px 12px 12px; max-height: 540px; overflow-y: auto; }
+.bb-cmd-hint { padding: 6px 4px 10px; font-size: 12px; color: #999; text-align: center; border-bottom: 1px dashed #ffe4ec; margin-bottom: 6px; }
+.bb-cmd { padding: 7px 10px; cursor: pointer; border-radius: 6px; transition: background .15s; }
 .bb-cmd:hover { background: #fff0f5; }
-.bb-cmd code { background: #ffe4ec; color: #c44569; padding: 2px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; flex-shrink: 0; font-family: Menlo, Consolas, monospace; }
-.bb-cmd span { color: #666; }
+.bb-cmd code { display: inline-block; background: #ffe4ec; color: #c44569; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-family: Menlo, Consolas, monospace; }
+.bb-cmd span { display: block; color: #888; font-size: 12px; margin-top: 3px; line-height: 1.4; }
+
+@media (max-width: 900px) {
+  #bb-layout { flex-direction: column; gap: 0; }
+  #bb-cmds { width: 100%; margin-top: 16px; }
+  #bb-cmds-header { display: none; }
+  #bb-cmds-toggle { display: block; width: 100%; padding: 12px 16px; background: #fffafc; border: none; border-radius: 16px; color: #d6336c; font-size: 14px; cursor: pointer; text-align: left; font-family: inherit; }
+  #bb-cmds-toggle:hover { background: #fff0f5; }
+  #bb-cmds-list { display: none; max-height: 280px; }
+  #bb-cmds-list.open { display: block; }
+}
 </style>
 </head>
 <body>
@@ -441,20 +452,23 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
     <button id="bb-unlock-btn">解鎖</button>
     <div id="bb-err"></div>
   </div>
-  <div id="bb-chat">
-    <div id="bb-header">寶貝</div>
-    <div id="bb-msgs"></div>
-    <div id="bb-input-row">
-      <textarea id="bb-input" rows="1" placeholder="跟寶貝說說話...（Enter 送出，Shift+Enter 換行）"></textarea>
-      <button id="bb-send">送出</button>
+  <div id="bb-layout">
+    <div id="bb-chat">
+      <div id="bb-header">寶貝</div>
+      <div id="bb-msgs"></div>
+      <div id="bb-input-row">
+        <textarea id="bb-input" rows="1" placeholder="跟寶貝說說話...（Enter 送出，Shift+Enter 換行）"></textarea>
+        <button id="bb-send">送出</button>
+      </div>
     </div>
     <div id="bb-cmds">
+      <div id="bb-cmds-header">📋 指令表</div>
       <button id="bb-cmds-toggle" type="button">📋 指令表（點我展開）</button>
       <div id="bb-cmds-list">
-        <div class="bb-cmd-hint">點任何一條指令 → 自動填入輸入框</div>
+        <div class="bb-cmd-hint">點任何一條 → 自動填入輸入框</div>
         <div class="bb-cmd" data-cmd="/模型"><code>/模型</code><span>看目前大腦狀態</span></div>
         <div class="bb-cmd" data-cmd="/用千問"><code>/用千問</code><span>只走千問（Groq Qwen）</span></div>
-        <div class="bb-cmd" data-cmd="/用deepseek"><code>/用deepseek</code><span>只走 DeepSeek（需要 key）</span></div>
+        <div class="bb-cmd" data-cmd="/用deepseek"><code>/用deepseek</code><span>只走 DeepSeek（需 key）</span></div>
         <div class="bb-cmd" data-cmd="/用自動"><code>/用自動</code><span>自動接棒（預設）</span></div>
         <div class="bb-cmd" data-cmd="/接colab "><code>/接colab</code><span>接上 Colab 去拒絕模型（後面貼網址）</span></div>
         <div class="bb-cmd" data-cmd="/断colab"><code>/断colab</code><span>斷開 Colab，回落千問</span></div>
@@ -489,8 +503,14 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
     return id;
   }
 
-  function showChat() { $('bb-unlock').style.display = 'none'; $('bb-chat').style.display = 'block'; }
-  function showUnlock() { $('bb-unlock').style.display = 'block'; $('bb-chat').style.display = 'none'; }
+  function showChat() {
+    $('bb-unlock').style.display = 'none';
+    $('bb-layout').style.display = 'flex';
+  }
+  function showUnlock() {
+    $('bb-unlock').style.display = 'block';
+    $('bb-layout').style.display = 'none';
+  }
 
   function addMsg(role, text) {
     var wrap = document.createElement('div');
