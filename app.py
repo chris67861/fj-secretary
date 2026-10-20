@@ -44,6 +44,9 @@ MODEL_PREF = os.environ.get("MODEL_PREF", "auto")
 COLAB_URL = ""
 COLAB_MODEL = os.environ.get("COLAB_MODEL", "huihui_ai/qwen3-abliterated:8b")
 
+# ── 你的 Colab 筆記本網址（網頁「🔗 開啟 Colab」按鈕點這個）──
+COLAB_NOTEBOOK_URL = "https://colab.research.google.com/drive/1AKEHWn_DAEyX-1NabPEwWubPpi537tO4?hl=zh-tw"
+
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_PENTEST = 8192
 
@@ -422,24 +425,31 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
 #bb-send:disabled { opacity: 0.5; cursor: not-allowed; }
 #bb-err { color: #c0392b; margin-top: 10px; font-size: 14px; min-height: 20px; }
 
-#bb-cmds { width: 270px; flex-shrink: 0; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); overflow: hidden; }
-#bb-cmds-header { background: linear-gradient(135deg, #ff6b9d, #c44569); color: white; padding: 16px 20px; font-weight: bold; font-size: 17px; }
-#bb-cmds-toggle { display: none; }
-#bb-cmds-list { padding: 8px 12px 12px; max-height: 540px; overflow-y: auto; }
+/* 桌面端：右側常駐指令表 */
+#bb-cmds-side { width: 270px; flex-shrink: 0; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); overflow: hidden; display: block; }
+#bb-cmds-side-header { background: linear-gradient(135deg, #ff6b9d, #c44569); color: white; padding: 16px 20px; font-weight: bold; font-size: 17px; }
+#bb-cmds-list-side { padding: 8px 12px 12px; max-height: 540px; overflow-y: auto; }
+
+/* 手機端：輸入框上方折疊指令表 */
+#bb-cmds-mobile { display: none; background: #fffafc; border-top: 1px solid #ffd6e0; }
+#bb-cmds-toggle { display: block; width: 100%; padding: 10px 16px; background: #fffafc; border: none; color: #d6336c; font-size: 14px; cursor: pointer; text-align: left; font-family: inherit; }
+#bb-cmds-toggle:hover { background: #fff0f5; }
+#bb-cmds-list-mobile { display: none; padding: 4px 12px 12px; max-height: 240px; overflow-y: auto; }
+#bb-cmds-list-mobile.open { display: block; }
+
+/* 共用指令項樣式 */
 .bb-cmd-hint { padding: 6px 4px 10px; font-size: 12px; color: #999; text-align: center; border-bottom: 1px dashed #ffe4ec; margin-bottom: 6px; }
-.bb-cmd { padding: 7px 10px; cursor: pointer; border-radius: 6px; transition: background .15s; }
+.bb-cmd { padding: 7px 10px; cursor: pointer; border-radius: 6px; transition: background .15s; text-decoration: none; display: block; }
 .bb-cmd:hover { background: #fff0f5; }
 .bb-cmd code { display: inline-block; background: #ffe4ec; color: #c44569; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-family: Menlo, Consolas, monospace; }
 .bb-cmd span { display: block; color: #888; font-size: 12px; margin-top: 3px; line-height: 1.4; }
+.bb-cmd-link code { background: #e8f5ff; color: #1e6cc4; }
+.bb-cmd-link:hover { background: #f0f8ff; }
 
 @media (max-width: 900px) {
   #bb-layout { flex-direction: column; gap: 0; }
-  #bb-cmds { width: 100%; margin-top: 16px; }
-  #bb-cmds-header { display: none; }
-  #bb-cmds-toggle { display: block; width: 100%; padding: 12px 16px; background: #fffafc; border: none; border-radius: 16px; color: #d6336c; font-size: 14px; cursor: pointer; text-align: left; font-family: inherit; }
-  #bb-cmds-toggle:hover { background: #fff0f5; }
-  #bb-cmds-list { display: none; max-height: 280px; }
-  #bb-cmds-list.open { display: block; }
+  #bb-cmds-side { display: none; }
+  #bb-cmds-mobile { display: block; }
 }
 </style>
 </head>
@@ -456,29 +466,18 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
     <div id="bb-chat">
       <div id="bb-header">寶貝</div>
       <div id="bb-msgs"></div>
+      <div id="bb-cmds-mobile">
+        <button id="bb-cmds-toggle" type="button">📋 指令表（點我展開）</button>
+        <div id="bb-cmds-list-mobile"></div>
+      </div>
       <div id="bb-input-row">
         <textarea id="bb-input" rows="1" placeholder="跟寶貝說說話...（Enter 送出，Shift+Enter 換行）"></textarea>
         <button id="bb-send">送出</button>
       </div>
     </div>
-    <div id="bb-cmds">
-      <div id="bb-cmds-header">📋 指令表</div>
-      <button id="bb-cmds-toggle" type="button">📋 指令表（點我展開）</button>
-      <div id="bb-cmds-list">
-        <div class="bb-cmd-hint">點任何一條 → 自動填入輸入框</div>
-        <div class="bb-cmd" data-cmd="/模型"><code>/模型</code><span>看目前大腦狀態</span></div>
-        <div class="bb-cmd" data-cmd="/用千問"><code>/用千問</code><span>只走千問（Groq Qwen）</span></div>
-        <div class="bb-cmd" data-cmd="/用deepseek"><code>/用deepseek</code><span>只走 DeepSeek（需 key）</span></div>
-        <div class="bb-cmd" data-cmd="/用自動"><code>/用自動</code><span>自動接棒（預設）</span></div>
-        <div class="bb-cmd" data-cmd="/接colab "><code>/接colab</code><span>接上 Colab 去拒絕模型（後面貼網址）</span></div>
-        <div class="bb-cmd" data-cmd="/断colab"><code>/断colab</code><span>斷開 Colab，回落千問</span></div>
-        <div class="bb-cmd" data-cmd="/開滲透"><code>/開滲透</code><span>切換滲透寶貝（紅隊模式）</span></div>
-        <div class="bb-cmd" data-cmd="/關滲透"><code>/關滲透</code><span>切回色色寶貝</span></div>
-        <div class="bb-cmd" data-cmd="/搜 "><code>/搜</code><span>上網搜尋（後面打關鍵字）</span></div>
-        <div class="bb-cmd" data-cmd="/查 "><code>/查</code><span>抓網頁重點（後面貼網址）</span></div>
-        <div class="bb-cmd" data-cmd="/畫 "><code>/畫</code><span>畫圖（後面打描述）</span></div>
-        <div class="bb-cmd" data-cmd="/清記憶"><code>/清記憶</code><span>清空對話記憶</span></div>
-      </div>
+    <div id="bb-cmds-side">
+      <div id="bb-cmds-side-header">📋 指令表</div>
+      <div id="bb-cmds-list-side"></div>
     </div>
   </div>
 </div>
@@ -489,6 +488,67 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
   var CHAT_ID_KEY = 'bb_chat_id';
   var $ = function(id) { return document.getElementById(id); };
   var errEl = $('bb-err');
+
+  var COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/drive/1AKEHWn_DAEyX-1NabPEwWubPpi537tO4?hl=zh-tw';
+
+  var CMDS = [
+    { cmd: '__LINK__', desc: '開啟 Colab 筆記本（重新跑內部指令）', href: COLAB_NOTEBOOK_URL, label: '🔗 Colab' },
+    { cmd: '/模型', desc: '看目前大腦狀態' },
+    { cmd: '/用千問', desc: '只走千問（Groq Qwen）' },
+    { cmd: '/用deepseek', desc: '只走 DeepSeek（需 key）' },
+    { cmd: '/用自動', desc: '自動接棒（預設）' },
+    { cmd: '/接colab ', desc: '接上 Colab 去拒絕模型（後面貼網址）' },
+    { cmd: '/断colab', desc: '斷開 Colab，回落千問' },
+    { cmd: '/開滲透', desc: '切換滲透寶貝（紅隊模式）' },
+    { cmd: '/關滲透', desc: '切回色色寶貝' },
+    { cmd: '/搜 ', desc: '上網搜尋（後面打關鍵字）' },
+    { cmd: '/查 ', desc: '抓網頁重點（後面貼網址）' },
+    { cmd: '/畫 ', desc: '畫圖（後面打描述）' },
+    { cmd: '/清記憶', desc: '清空對話記憶' }
+  ];
+
+  function renderCmds(container) {
+    var html = '<div class="bb-cmd-hint">點任何一條 → 自動填入輸入框</div>';
+    for (var i = 0; i < CMDS.length; i++) {
+      var c = CMDS[i];
+      if (c.href) {
+        html += '<a class="bb-cmd bb-cmd-link" href="' + c.href + '" target="_blank" rel="noopener">'
+              + '<code>' + c.label + '</code><span>' + c.desc + '</span></a>';
+      } else {
+        html += '<div class="bb-cmd" data-cmd="' + c.cmd + '">'
+              + '<code>' + c.cmd.trim() + '</code><span>' + c.desc + '</span></div>';
+      }
+    }
+    container.innerHTML = html;
+  }
+
+  renderCmds($('bb-cmds-list-side'));
+  renderCmds($('bb-cmds-list-mobile'));
+
+  function bindCmdClicks() {
+    var items = document.querySelectorAll('.bb-cmd[data-cmd]');
+    for (var i = 0; i < items.length; i++) {
+      (function(el) {
+        el.addEventListener('click', function() {
+          var cmd = el.getAttribute('data-cmd');
+          var input = $('bb-input');
+          input.value = cmd;
+          input.focus();
+          try { input.setSelectionRange(cmd.length, cmd.length); } catch (err) {}
+        });
+      })(items[i]);
+    }
+  }
+  bindCmdClicks();
+
+  var cmdsToggle = $('bb-cmds-toggle');
+  var cmdsListMobile = $('bb-cmds-list-mobile');
+  if (cmdsToggle && cmdsListMobile) {
+    cmdsToggle.addEventListener('click', function() {
+      cmdsListMobile.classList.toggle('open');
+      cmdsToggle.textContent = cmdsListMobile.classList.contains('open') ? '📋 指令表（點我收合）' : '📋 指令表（點我展開）';
+    });
+  }
 
   function getToken() { return localStorage.getItem(TOKEN_KEY); }
   function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
@@ -590,27 +650,6 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
   $('bb-input').addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
-
-  var cmdsToggle = $('bb-cmds-toggle');
-  var cmdsList = $('bb-cmds-list');
-  if (cmdsToggle && cmdsList) {
-    cmdsToggle.addEventListener('click', function() {
-      cmdsList.classList.toggle('open');
-      cmdsToggle.textContent = cmdsList.classList.contains('open') ? '📋 指令表（點我收合）' : '📋 指令表（點我展開）';
-    });
-    var cmdItems = document.querySelectorAll('.bb-cmd');
-    for (var i = 0; i < cmdItems.length; i++) {
-      (function(el) {
-        el.addEventListener('click', function() {
-          var cmd = el.getAttribute('data-cmd');
-          var input = $('bb-input');
-          input.value = cmd;
-          input.focus();
-          try { input.setSelectionRange(cmd.length, cmd.length); } catch (err) {}
-        });
-      })(cmdItems[i]);
-    }
-  }
 
   if (getToken()) {
     showChat();
