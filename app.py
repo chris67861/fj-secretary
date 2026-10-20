@@ -389,7 +389,7 @@ def make_image(prompt):
 
 LAST_UPDATE_ID = 0
 
-# ── 新增：網頁版聊天窗（Render 上的獨立頁面，WordPress 用 iframe 嵌入） ──
+# ── 網頁版聊天窗（Render 上的獨立頁面） ──
 WEBCHAT_HTML = """<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -420,6 +420,16 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
 #bb-send { padding: 12px 28px; margin-left: 8px; background: #d6336c; color: white; border: none; border-radius: 10px; font-size: 15px; cursor: pointer; }
 #bb-send:disabled { opacity: 0.5; cursor: not-allowed; }
 #bb-err { color: #c0392b; margin-top: 10px; font-size: 14px; min-height: 20px; }
+#bb-cmds { border-top: 1px solid #ffd6e0; background: #fffafc; }
+#bb-cmds-toggle { display: block; width: 100%; padding: 10px 16px; background: #fffafc; border: none; color: #d6336c; font-size: 14px; cursor: pointer; text-align: left; font-family: inherit; }
+#bb-cmds-toggle:hover { background: #fff0f5; }
+#bb-cmds-list { display: none; padding: 4px 16px 12px; max-height: 280px; overflow-y: auto; }
+#bb-cmds-list.open { display: block; }
+.bb-cmd-hint { padding: 6px 8px 10px; font-size: 12px; color: #999; text-align: center; border-bottom: 1px dashed #ffe4ec; margin-bottom: 6px; }
+.bb-cmd { display: flex; gap: 10px; align-items: baseline; padding: 7px 8px; font-size: 13px; line-height: 1.5; cursor: pointer; border-radius: 6px; }
+.bb-cmd:hover { background: #fff0f5; }
+.bb-cmd code { background: #ffe4ec; color: #c44569; padding: 2px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; flex-shrink: 0; font-family: Menlo, Consolas, monospace; }
+.bb-cmd span { color: #666; }
 </style>
 </head>
 <body>
@@ -437,6 +447,24 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
     <div id="bb-input-row">
       <textarea id="bb-input" rows="1" placeholder="跟寶貝說說話...（Enter 送出，Shift+Enter 換行）"></textarea>
       <button id="bb-send">送出</button>
+    </div>
+    <div id="bb-cmds">
+      <button id="bb-cmds-toggle" type="button">📋 指令表（點我展開）</button>
+      <div id="bb-cmds-list">
+        <div class="bb-cmd-hint">點任何一條指令 → 自動填入輸入框</div>
+        <div class="bb-cmd" data-cmd="/模型"><code>/模型</code><span>看目前大腦狀態</span></div>
+        <div class="bb-cmd" data-cmd="/用千問"><code>/用千問</code><span>只走千問（Groq Qwen）</span></div>
+        <div class="bb-cmd" data-cmd="/用deepseek"><code>/用deepseek</code><span>只走 DeepSeek（需要 key）</span></div>
+        <div class="bb-cmd" data-cmd="/用自動"><code>/用自動</code><span>自動接棒（預設）</span></div>
+        <div class="bb-cmd" data-cmd="/接colab "><code>/接colab</code><span>接上 Colab 去拒絕模型（後面貼網址）</span></div>
+        <div class="bb-cmd" data-cmd="/断colab"><code>/断colab</code><span>斷開 Colab，回落千問</span></div>
+        <div class="bb-cmd" data-cmd="/開滲透"><code>/開滲透</code><span>切換滲透寶貝（紅隊模式）</span></div>
+        <div class="bb-cmd" data-cmd="/關滲透"><code>/關滲透</code><span>切回色色寶貝</span></div>
+        <div class="bb-cmd" data-cmd="/搜 "><code>/搜</code><span>上網搜尋（後面打關鍵字）</span></div>
+        <div class="bb-cmd" data-cmd="/查 "><code>/查</code><span>抓網頁重點（後面貼網址）</span></div>
+        <div class="bb-cmd" data-cmd="/畫 "><code>/畫</code><span>畫圖（後面打描述）</span></div>
+        <div class="bb-cmd" data-cmd="/清記憶"><code>/清記憶</code><span>清空對話記憶</span></div>
+      </div>
     </div>
   </div>
 </div>
@@ -543,6 +571,27 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
+  var cmdsToggle = $('bb-cmds-toggle');
+  var cmdsList = $('bb-cmds-list');
+  if (cmdsToggle && cmdsList) {
+    cmdsToggle.addEventListener('click', function() {
+      cmdsList.classList.toggle('open');
+      cmdsToggle.textContent = cmdsList.classList.contains('open') ? '📋 指令表（點我收合）' : '📋 指令表（點我展開）';
+    });
+    var cmdItems = document.querySelectorAll('.bb-cmd');
+    for (var i = 0; i < cmdItems.length; i++) {
+      (function(el) {
+        el.addEventListener('click', function() {
+          var cmd = el.getAttribute('data-cmd');
+          var input = $('bb-input');
+          input.value = cmd;
+          input.focus();
+          try { input.setSelectionRange(cmd.length, cmd.length); } catch (err) {}
+        });
+      })(cmdItems[i]);
+    }
+  }
+
   if (getToken()) {
     showChat();
     addMsg('bot', '爸爸～歡迎回來，人家一直在等你。');
@@ -557,8 +606,6 @@ body { margin: 0; background: #fff8fa; font-family: -apple-system, "Noto Sans TC
 def webchat():
     return WEBCHAT_HTML
 
-
-# ── 原有路由全部保留 ──
 
 @app.route("/telegram", methods=["POST"])
 def webhook():
