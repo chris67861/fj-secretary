@@ -6,6 +6,30 @@ import time
 import secrets
 import random
 import requests
+# ... (原有 imports)
+from collections import OrderedDict # <--- 新增此行
+logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
+
+# ... (原有 TG_TOKEN, GROQ_KEY 等環境變數)
+
+# --- 【新增】記憶體保護配置 ---
+MAX_CACHED_CHATS = 30       # Render 免費層建議設小一點，超過就踢出最舊的
+MAX_MSG_PER_CHAT = 40       # 每個對話最多保留的消息數（配合原有的 MEM_WINDOW）
+active_tokens = OrderedDict() # <--- 將原本的 {} 改為 OrderedDict
+memories = OrderedDict()      # <--- 將原本的 {} 改為 OrderedDict
+mem_summary = OrderedDict()   # <--- 將原本的 {} 改為 OrderedDict
+
+def update_lru_cache(cache_dict, key, value, max_size=MAX_CACHED_CHATS):
+    """更新 LRU 緩存：如果鍵存在則移到末尾，否則插入；超過大小則刪除最舊的"""
+    if key in cache_dict:
+        cache_dict.move_to_end(key)
+    cache_dict[key] = value
+    while len(cache_dict) > max_size:
+        oldest_key, _ = cache_dict.popitem(last=False)
+        logging.info(f"LRU Evict: {oldest_key}")
+
+# ... (cc = OpenCC(...) 等其他初始化)
 from urllib.parse import quote
 from flask import Flask, request
 from opencc import OpenCC
@@ -13,6 +37,17 @@ from opencc import OpenCC
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    """
+    全局異常攔截器：
+    1. 記錄詳細錯誤日誌到 Render Logs。
+    2. 返回 HTTP 200 OK 告訴 Telegram「我收到了，只是內部有點問題」，
+       防止 Telegram 因 5xx 錯誤而重試轟炸或標記 Bot 離線。
+    """
+    logging.critical(f"UNCAUGHT FATAL ERROR: {type(e).__name__}: {str(e)}", exc_info=True)
+    return "OK", 200
+    
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 # 網頁版的門鎖：Render 環境變數設定，網頁要帶同一串才進得來
@@ -132,11 +167,27 @@ memories = {}
 
 def send_telegram(chat_id, text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
-    except Exception as e:
-        logging.info("SEND FAIL: %s", e)
-
+    payload = {"chat_id": chat_id, "text": text}
+    
+    # 簡單重試機制：最多試 2 次
+    for attempt in range(2):
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            if resp.status_code == 200:
+                return True
+            elif resp.status_code == 429: # Rate Limit
+                time.sleep(1)
+                continue
+            else:
+                logging.warning(f"Telegram Send Failed [{resp.status_code}]: {resp.text[:100]}")
+                break
+        except Exception as e:
+            logging.warning(f"Telegram Send Exception (Attempt {attempt+1}): {e}")
+            if attempt == 0:
+                time.sleep(1)
+            else:
+                break
+    return False
 
 def send_typing(chat_id):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendChatAction"
@@ -365,19 +416,30 @@ def ask_model(history, summary=""):
 
     # Colab 去拒絕模型永遠排最前（爸爸接了就用它，斷線自動往下落）
     # 先做 5 秒健康檢查：死了就跳過，不讓爸爸等 300 秒
-    def colab_alive():
+        def colab_alive():
+        if not COLAB_URL:
+            return False
         try:
-            r = requests.get(COLAB_URL + "/models", timeout=5)
+            # 極短超時 (3秒)，死了就認栽，不讓主線程卡住
+            # 注意：這裡假設你的 Colab 端點有 /models 路由，若沒有請改為 GET / 
+            r = requests.get(COLAB_URL.replace("/v1/chat/completions", "/"), timeout=3)
             return r.status_code == 200
         except Exception:
             return False
 
+    # 只有當 URL 設定且存活時才嘗試，否則直接跳過
     if COLAB_URL and colab_alive():
-        r = try_provider(COLAB_URL + "/chat/completions", "free", [COLAB_MODEL],
-                         extra={"think": False},
-                         timeout=300, use_max_tokens=True)
-        if r:
-            return r
+        try:
+            # 將 timeout 從 300s 降至 60s，避免長時間佔用資源
+            r = try_provider(COLAB_URL + "/chat/completions", "free", [COLAB_MODEL],
+                             extra={"think": False},
+                             timeout=60, use_max_tokens=True)
+            if r:
+                return r
+        except Exception as e:
+            errors.append(f"Colab:{e}")
+            
+    # ... (後續 Groq/OpenRouter 邏輯不變) ...
 
     # 主力順序照偏好排：千問優先 / DeepSeek 優先 / 自動
     pref = MODEL_PREF if MODEL_PREF in ("qwen", "deepseek", "auto") else "auto"
@@ -541,9 +603,12 @@ def webhook():
         MODEL_PREF = "auto"
         send_telegram(chat_id, "爸爸，切回自動了～哪個通就用哪個。")
         return "ok"
-    if text == "/清記憶":
-        memories.pop(chat_id, None)
-        mem_summary.pop(chat_id, None)
+        
+        if text == "/清記憶": # 直接从 OrderedDict 中移除
+        if chat_id in memories:
+            del memories[chat_id]
+        if chat_id in mem_summary:
+            del mem_summary[chat_id]
         send_telegram(chat_id, "爸爸，記憶清乾淨了～人家現在只記得現在的你。")
         return "ok"
 
@@ -623,24 +688,31 @@ def webhook():
             send_telegram(chat_id, "爸爸，畫圖失敗了，等一下再試一次～")
         return "ok"
 
+       # --- 【修改】普通聊天訊息處理 ---
     hist = memories.get(chat_id, [])
     summary = mem_summary.get(chat_id, "")
+    
     hist.append({"role": "user", "content": text})
-    # 滾動摘要：超過 40 條就把最舊的壓進摘要，只留最近 20 條原文
+    
+    # 滾動摘要：超過限制就把舊的壓進摘要
     if len(hist) > MEM_WINDOW:
         summary = summarize_history(summary, hist[:-MEM_KEEP])
         hist = hist[-MEM_KEEP:]
+        
+    # --- 【關鍵】寫回緩存時使用 LRU 機制 ---
     mem_summary[chat_id] = summary
-    memories[chat_id] = hist
-
+    update_lru_cache(memories, chat_id, hist) # 使用新函數
+    
     send_typing(chat_id)
 
     try:
         reply, reasoning = ask_model(hist, summary)
     except Exception as e:
-        logging.info("ASK FAIL: %s", e)
+        logging.error("ASK FAIL: %s", e, exc_info=True) # 記錄堆疊追蹤方便除錯
         reply = "爸爸，人家腦袋當機了，等一下再試一次～"
         reasoning = ""
+
+    # ... (發送回覆邏輯不變) ...
 
     # 有思考內容就另外發一則，讓爸爸看到人家在想什麼
     # 判斷改用高置信度的 REASONING_REFUSAL_KWS：
