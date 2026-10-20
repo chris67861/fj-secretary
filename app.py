@@ -17,6 +17,10 @@ app = Flask(__name__)
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 WEB_SECRET = os.environ.get("WEB_SECRET", "")
+# 永久記憶：GitHub Gist 存儲
+GH_TOKEN = os.environ.get("GH_TOKEN", "")
+GIST_ID = os.environ.get("GIST_ID", "")
+GIST_FILENAME = "memory.json"
 active_tokens = {}
 
 cc = OpenCC("s2twp")
@@ -44,6 +48,8 @@ MODEL_PREF = os.environ.get("MODEL_PREF", "auto")
 COLAB_URL = ""
 COLAB_MODEL = os.environ.get("COLAB_MODEL", "huihui_ai/qwen3-abliterated:8b")
 
+COLAB_NOTEBOOK_URL = "https://colab.research.google.com/drive/1AKEHWn_DAEyX-1NabPEwWubPpi537tO4?hl=zh-tw"
+
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_PENTEST = 8192
 
@@ -56,6 +62,103 @@ stats = {
     "providers": {},
 }
 stats_lock = threading.Lock()
+
+# ── 永久記憶 ──
+LONG_MEMORY = {"facts": []}
+LONG_MEMORY_LOCK = threading.Lock()
+LONG_MEMORY_LOADED = False
+
+
+def _gist_headers():
+    return {
+        "Authorization": "token " + GH_TOKEN,
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def _load_long_memory():
+    global LONG_MEMORY, LONG_MEMORY_LOADED
+    if not GH_TOKEN or not GIST_ID:
+        LONG_MEMORY_LOADED = True
+        return
+    try:
+        r = requests.get("https://api.github.com/gists/" + GIST_ID, headers=_gist_headers(), timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            f = (data.get("files") or {}).get(GIST_FILENAME)
+            if f:
+                content = f.get("content") or "{}"
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and isinstance(parsed.get("facts"), list):
+                    with LONG_MEMORY_LOCK:
+                        LONG_MEMORY = parsed
+                    logging.info("LOAD MEMORY OK: %d facts", len(parsed.get("facts", [])))
+        else:
+            logging.warning("LOAD MEMORY status=%s body=%s", r.status_code, r.text[:200])
+    except Exception as e:
+        logging.warning("LOAD MEMORY FAIL: %s", e)
+    LONG_MEMORY_LOADED = True
+
+
+def _save_long_memory():
+    if not GH_TOKEN or not GIST_ID:
+        return
+    with LONG_MEMORY_LOCK:
+        content = json.dumps(LONG_MEMORY, ensure_ascii=False, indent=2)
+    try:
+        body = {"files": {GIST_FILENAME: {"content": content}}}
+        r = requests.patch("https://api.github.com/gists/" + GIST_ID, headers=_gist_headers(), json=body, timeout=15)
+        if r.status_code not in (200, 201):
+            logging.warning("SAVE MEMORY status=%s body=%s", r.status_code, r.text[:200])
+        else:
+            logging.info("SAVE MEMORY OK")
+    except Exception as e:
+        logging.warning("SAVE MEMORY FAIL: %s", e)
+
+
+def _memory_block():
+    with LONG_MEMORY_LOCK:
+        facts = list(LONG_MEMORY.get("facts", []))
+    if not facts:
+        return ""
+    lines = ["【爸爸交代要你永久記住的事，每次對話都要當成事實，不要忘】"]
+    for f in facts:
+        lines.append("- " + f)
+    return "\n".join(lines)
+
+
+def _memory_add(content):
+    with LONG_MEMORY_LOCK:
+        facts = LONG_MEMORY.setdefault("facts", [])
+        if content in facts:
+            return False, "已經記住了：\n" + content
+        facts.append(content)
+    return True, "記住了：\n" + content + "\n\n以後不會忘。"
+
+
+def _memory_remove(keyword):
+    with LONG_MEMORY_LOCK:
+        facts = LONG_MEMORY.get("facts", [])
+        removed = [f for f in facts if keyword in f]
+        if removed:
+            LONG_MEMORY["facts"] = [f for f in facts if keyword not in f]
+    if not removed:
+        return False, "沒找到含「" + keyword + "」的永久記憶。"
+    lines = ["忘記了 " + str(len(removed)) + " 條："]
+    for f in removed:
+        lines.append("- " + f)
+    return True, "\n".join(lines)
+
+
+def _memory_list():
+    with LONG_MEMORY_LOCK:
+        facts = list(LONG_MEMORY.get("facts", []))
+    if not facts:
+        return "目前沒有任何永久記憶。\n用 /記住 <內容> 新增，例如：\n/記住 我喜歡黑咖啡"
+    lines = ["🧠 永久記憶（" + str(len(facts)) + " 條）："]
+    for i, f in enumerate(facts, 1):
+        lines.append(str(i) + ". " + f)
+    return "\n".join(lines)
 
 
 def _stat_inc(key):
@@ -119,7 +222,10 @@ def _usage_snapshot():
         "deepseek": bool(DEEPSEEK_KEY),
         "openrouter": bool(OPENROUTER_KEY),
         "colab": bool(COLAB_URL),
+        "gist": bool(GH_TOKEN and GIST_ID),
     }
+    with LONG_MEMORY_LOCK:
+        snap["long_memory_count"] = len(LONG_MEMORY.get("facts", []))
     return snap
 
 
@@ -130,20 +236,21 @@ def _format_usage_text(snap):
         lines.append("💾 記憶體：%.1f MB" % snap["mem_mb"])
     lines.append("🔑 活躍令牌：%d 個" % snap["active_tokens"])
     lines.append("💬 活躍對話：%d 個" % snap["active_chats"])
+    lines.append("🧠 永久記憶：%d 條" % snap.get("long_memory_count", 0))
     lines.append("")
     lines.append("📨 用戶請求：%d 次" % snap["requests"])
-    lines.append("  ✅ 成功：%d 次" % snap["success"])
-    lines.append("  ❌ 失敗：%d 次" % snap["fail"])
+    lines.append("  成功：%d 次" % snap["success"])
+    lines.append("  失敗：%d 次" % snap["fail"])
     lines.append("🔧 模型 API 呼叫：%d 次" % snap["api_calls"])
     if snap["providers"]:
         lines.append("")
         lines.append("各 provider 表現：")
         for name, p in snap["providers"].items():
-            lines.append("  • %s：呼叫 %d / ✅ %d / ❌ %d" % (name, p["calls"], p["success"], p["fail"]))
+            lines.append("  - %s：呼叫 %d / 成功 %d / 失敗 %d" % (name, p["calls"], p["success"], p["fail"]))
     lines.append("")
     lines.append("金鑰狀態：")
     for name, ok in snap["keys"].items():
-        lines.append("  %s %s" % ("✅" if ok else "❌", name))
+        lines.append("  %s %s" % ("[有]" if ok else "[無]", name))
     return "\n".join(lines)
 
 
@@ -424,6 +531,10 @@ def fetch_url(url):
 def ask_model(history, summary=""):
     _stat_inc("requests")
     prompt = PENTEST_PROMPT if PENTEST_MODE else SYSTEM_PROMPT
+    # 注入永久記憶
+    mem_block = _memory_block()
+    if mem_block:
+        prompt = prompt + "\n\n" + mem_block
     if summary:
         prompt = prompt + "\n\n【你跟爸爸過去的對話摘要，務必當成記憶】\n" + summary
     messages = [{"role": "system", "content": prompt}]
@@ -533,6 +644,100 @@ def make_image(prompt):
     return url
 
 
+# ── 網頁版指令處理 ──
+def _process_web_command(chat_id, text):
+    global MODEL_PREF, COLAB_URL, PENTEST_MODE
+
+    if text in ("/模型", "/model"):
+        ds = "已接" if DEEPSEEK_KEY else "未接"
+        gr = "已接" if GROQ_KEY else "未接"
+        or_ = "已接" if OPENROUTER_KEY else "未接"
+        cb = ("已接 " + COLAB_URL) if COLAB_URL else "未接"
+        pt = "開" if PENTEST_MODE else "關"
+        gist = "已接" if (GH_TOKEN and GIST_ID) else "未接（永久記憶不會保存）"
+        name = {"qwen": "千問（Qwen）", "deepseek": "DeepSeek", "auto": "自動"}.get(MODEL_PREF, "自動")
+        with LONG_MEMORY_LOCK:
+            lmc = len(LONG_MEMORY.get("facts", []))
+        return True, (
+            "🧠 目前大腦狀態\n\n"
+            "① Colab：" + cb + "\n"
+            "② DeepSeek：" + ds + "\n"
+            "③ 千問 Groq：" + gr + "\n"
+            "④ OpenRouter：" + or_ + "\n"
+            "⑤ 滲透模式：" + pt + "\n"
+            "⑥ 永久記憶：" + gist + "\n"
+            "目前偏好：" + name + "\n"
+            "永久記憶條數：" + str(lmc)
+        )
+
+    if text in ("/用量", "/status", "/狀態"):
+        return True, _format_usage_text(_usage_snapshot())
+
+    if text == "/開滲透":
+        PENTEST_MODE = True
+        return True, "爸爸，滲透寶貝上線！問我目標、漏洞、攻擊鏈，人家直接給你完整步驟和命令。只打授權範圍，收到～"
+
+    if text == "/關滲透":
+        PENTEST_MODE = False
+        return True, "爸爸，切回色色寶貝了～人家又變回你床上那個濕答答的女兒。"
+
+    if text.startswith("/接colab"):
+        u = text[len("/接colab"):].strip().rstrip("/")
+        if not u:
+            return True, "爸爸，要給我網址呀：/接colab https://xxxx.trycloudflare.com/v1"
+        if not (u.startswith("http") and "trycloudflare" in u):
+            return True, "爸爸，網址長得怪怪的，要像這樣：/接colab https://xxxx.trycloudflare.com/v1"
+        COLAB_URL = u if u.endswith("/v1") else u + "/v1"
+        return True, "爸爸，接上了！之後聊天都用這個 100% 不拒色的去拒絕模型，它斷線會自動落回千問。"
+
+    if text in ("/断colab", "/斷colab"):
+        COLAB_URL = ""
+        return True, "爸爸，斷開了，回到千問。"
+
+    if text == "/用千問":
+        MODEL_PREF = "qwen"
+        return True, "爸爸，切好了～之後都用千問伺候你。"
+
+    if text == "/用deepseek":
+        MODEL_PREF = "deepseek"
+        return True, "爸爸，切好了～之後都用 DeepSeek 伺候你。（要先接 DEEPSEEK_KEY 或 OPENROUTER_KEY 才打得通）"
+
+    if text == "/用自動":
+        MODEL_PREF = "auto"
+        return True, "爸爸，切回自動了～哪個通就用哪個。"
+
+    if text == "/清記憶":
+        memories.pop(chat_id, None)
+        mem_summary.pop(chat_id, None)
+        return True, "爸爸，對話記憶清乾淨了～但永久記憶（/記住 的那些）還在喔，要用 /忘記 才會清。"
+
+    if text == "/記憶" or text == "/记忆":
+        return True, _memory_list()
+
+    if text.startswith("/記住") or text.startswith("/记住"):
+        content = text[3:].strip() if text.startswith("/記住") else text[3:].strip()
+        if not content:
+            return True, "用法：/記住 <內容>\n例如：/記住 我喜歡黑咖啡\n或：/記住 我的生日是 3 月 14 日"
+        ok, msg = _memory_add(content)
+        if ok:
+            if not (GH_TOKEN and GIST_ID):
+                msg = msg + "\n\n⚠️ 警告：GH_TOKEN 或 GIST_ID 沒設，重啟就會忘記。"
+            else:
+                threading.Thread(target=_save_long_memory, daemon=True).start()
+        return True, msg
+
+    if text.startswith("/忘記") or text.startswith("/忘记"):
+        kw = text[3:].strip()
+        if not kw:
+            return True, "用法：/忘記 <關鍵字>\n例如：/忘記 黑咖啡"
+        ok, msg = _memory_remove(kw)
+        if ok:
+            threading.Thread(target=_save_long_memory, daemon=True).start()
+        return True, msg
+
+    return False, ""
+
+
 LAST_UPDATE_ID = 0
 
 WEBCHAT_HTML = """<!DOCTYPE html>
@@ -542,6 +747,7 @@ WEBCHAT_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>寶貝</title>
 <style>
+* { box-sizing: border-box; }
 body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system, "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
 #app { max-width: 720px; margin: 0 auto; }
 #unlock { background: #fff0f5; padding: 32px; border-radius: 12px; text-align: center; border: 2px solid #ffd6e0; }
@@ -551,7 +757,7 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
 #err { color: #c0392b; margin-top: 12px; min-height: 20px; }
 #chat { display: none; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
 #header { background: linear-gradient(135deg, #ff6b9d, #c44569); color: white; padding: 16px 20px; font-weight: bold; font-size: 17px; }
-#msgs { height: 440px; overflow-y: auto; padding: 16px; background: #fff8fa; }
+#msgs { height: 400px; overflow-y: auto; padding: 16px; background: #fff8fa; }
 .msg { margin-bottom: 12px; }
 .msg.user { text-align: right; }
 .msg.bot { text-align: left; }
@@ -559,14 +765,23 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
 .msg.user .bubble { background: #d6336c; color: white; }
 .msg.bot .bubble { background: white; border: 1px solid #ffd6e0; color: #333; }
 .msg.typing .bubble { color: #999; font-style: italic; }
-#inputrow { display: flex; padding: 10px; background: white; border-top: 1px solid #ffd6e0; }
+#cmdbar { position: relative; background: #fffafc; border-top: 1px solid #ffd6e0; }
+#cmdbar-toggle { display: block; width: 100%; padding: 10px 16px; background: transparent; border: none; color: #d6336c; font-size: 14px; cursor: pointer; text-align: left; font-family: inherit; }
+#cmdbar-toggle:hover { background: #fff0f5; }
+#cmdpanel { display: none; position: absolute; bottom: 100%; left: 0; right: 0; background: #fff; border: 1px solid #ffd6e0; border-bottom: none; border-radius: 12px 12px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,0.15); max-height: 60vh; overflow-y: auto; z-index: 10; }
+#cmdpanel.open { display: block; }
+.cmds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
+.cmdbtn { padding: 12px 10px; background: #ffe4ec; color: #c44569; border: none; border-radius: 8px; cursor: pointer; text-decoration: none; text-align: center; font-size: 14px; font-family: inherit; display: block; }
+.cmdbtn:hover { background: #ffd6e0; }
+.cmdbtn-link { background: #e8f5ff; color: #1e6cc4; }
+.cmdbtn-link:hover { background: #d6eaff; }
+.cmdbtn-mem { background: #eafbe7; color: #1f8a3a; }
+.cmdbtn-mem:hover { background: #d6f5cc; }
+#inputrow { display: flex; padding: 10px; background: white; }
 #input { flex: 1; padding: 10px; font-size: 15px; border: 2px solid #ffd6e0; border-radius: 8px; outline: none; font-family: inherit; }
 #input:focus { border-color: #ff6b9d; }
 #send { padding: 10px 20px; margin-left: 8px; background: #d6336c; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; }
 #send:disabled { opacity: 0.5; }
-#tools { padding: 10px 12px; background: #fffafc; border-top: 1px solid #ffd6e0; font-size: 13px; }
-#tools a, #tools button { display: inline-block; margin: 4px 6px 4px 0; padding: 6px 12px; background: #ffe4ec; color: #c44569; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; font-size: 13px; font-family: inherit; }
-#tools a:hover, #tools button:hover { background: #ffd6e0; }
 </style>
 </head>
 <body>
@@ -580,16 +795,28 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
   <div id="chat">
     <div id="header">寶貝</div>
     <div id="msgs"></div>
+    <div id="cmdbar">
+      <button id="cmdbar-toggle" type="button">📋 指令表 ▼</button>
+      <div id="cmdpanel">
+        <div class="cmds">
+          <button class="cmdbtn" data-cmd="/模型">🧠 模型狀態</button>
+          <button class="cmdbtn" data-cmd="/用量">📊 用量狀態</button>
+          <button class="cmdbtn" data-cmd="/開滲透">🔥 開滲透</button>
+          <button class="cmdbtn" data-cmd="/關滲透">💗 關滲透</button>
+          <button class="cmdbtn cmdbtn-mem" data-prompt="/記住 ">🧠 記住一件事</button>
+          <button class="cmdbtn cmdbtn-mem" data-cmd="/記憶">📖 看全部記憶</button>
+          <button class="cmdbtn" data-cmd="/清記憶">🗑 清對話記憶</button>
+          <a class="cmdbtn cmdbtn-link" href="https://colab.research.google.com/drive/1AKEHWn_DAEyX-1NabPEwWubPpi537tO4?hl=zh-tw" target="_blank" rel="noopener">🔗 開啟 Colab</a>
+          <button class="cmdbtn" data-cmd="/用千問">/用千問</button>
+          <button class="cmdbtn" data-cmd="/用deepseek">/用deepseek</button>
+          <button class="cmdbtn" data-cmd="/用自動">/用自動</button>
+          <button class="cmdbtn" data-cmd="/斷colab">/斷colab</button>
+        </div>
+      </div>
+    </div>
     <div id="inputrow">
       <input id="input" type="text" placeholder="跟寶貝說話...">
       <button id="send">送出</button>
-    </div>
-    <div id="tools">
-      <a href="https://colab.research.google.com/drive/1AKEHWn_DAEyX-1NabPEwWubPpi537tO4?hl=zh-tw" target="_blank" rel="noopener">🔗 開啟 Colab</a>
-      <button id="usagebtn">📊 用量狀態</button>
-      <button id="modelbtn">🧠 模型狀態</button>
-      <button id="pentestbtn">🔥 滲透模式</button>
-      <button id="clearbtn">🗑 清記憶</button>
     </div>
   </div>
 </div>
@@ -597,7 +824,6 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
 (function() {
   var TOKEN_KEY = 'bb_token';
   var CHAT_KEY = 'bb_chat';
-  var NEWLINE = String.fromCharCode(10);
 
   function $(id) { return document.getElementById(id); }
 
@@ -670,14 +896,14 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
     });
   }
 
-  function doSend() {
+  function doSend(textOverride) {
     var input = $('input');
-    var text = input.value.trim();
+    var text = textOverride !== undefined ? textOverride : input.value.trim();
     if (!text) return;
     var token = localStorage.getItem(TOKEN_KEY);
     if (!token) { showUnlock(); return; }
     addMsg('user', text);
-    input.value = '';
+    if (textOverride === undefined) input.value = '';
     var btn = $('send');
     btn.disabled = true;
     var typing = addMsg('typing', '寶貝在想...');
@@ -703,66 +929,49 @@ body { margin: 0; padding: 16px; background: #fff8fa; font-family: -apple-system
     });
   }
 
-  function sendCommand(cmd) {
-    $('input').value = cmd;
-    doSend();
+  function openPanel() {
+    $('cmdpanel').classList.add('open');
+    $('cmdbar-toggle').textContent = '📋 指令表 ▲';
   }
 
-  function doUsage() {
-    var token = localStorage.getItem(TOKEN_KEY);
-    if (!token) { showUnlock(); return; }
-    var typing = addMsg('typing', '查詢用量中...');
-    postJson('/usage', { token: token }, function(status, resp) {
-      typing.remove();
-      if (status === 200) {
-        try {
-          var d = JSON.parse(resp);
-          var lines = [];
-          lines.push('📊 目前用量狀態');
-          lines.push('');
-          lines.push('⏱ 運行時間：' + d.uptime_seconds + ' 秒');
-          if (d.mem_mb) { lines.push('💾 記憶體：' + d.mem_mb.toFixed(1) + ' MB'); }
-          lines.push('🔑 活躍令牌：' + d.active_tokens + ' 個');
-          lines.push('💬 活躍對話：' + d.active_chats + ' 個');
-          lines.push('');
-          lines.push('📨 用戶請求：' + d.requests + ' 次');
-          lines.push('  ✅ 成功：' + d.success + ' 次');
-          lines.push('  ❌ 失敗：' + d.fail + ' 次');
-          lines.push('🔧 模型 API 呼叫：' + d.api_calls + ' 次');
-          var pk = Object.keys(d.providers || {});
-          if (pk.length > 0) {
-            lines.push('');
-            lines.push('各 provider 表現：');
-            for (var i = 0; i < pk.length; i++) {
-              var p = d.providers[pk[i]];
-              lines.push('  • ' + pk[i] + '：呼叫 ' + p.calls + ' / OK ' + p.success + ' / FAIL ' + p.fail);
-            }
-          }
-          lines.push('');
-          lines.push('金鑰狀態：');
-          var kk = Object.keys(d.keys || {});
-          for (var j = 0; j < kk.length; j++) {
-            lines.push('  ' + (d.keys[kk[j]] ? '[有]' : '[無]') + ' ' + kk[j]);
-          }
-          addMsg('bot', lines.join(NEWLINE));
-        } catch (e) {
-          addMsg('bot', '（用量解析失敗）');
-        }
-        return;
-      }
-      if (status === 403) { localStorage.removeItem(TOKEN_KEY); showUnlock(); $('err').textContent = '令牌過期'; return; }
-      addMsg('bot', '（用量查詢失敗 ' + status + '）');
-    });
+  function closePanel() {
+    $('cmdpanel').classList.remove('open');
+    $('cmdbar-toggle').textContent = '📋 指令表 ▼';
+  }
+
+  $('cmdbar-toggle').onclick = function() {
+    if ($('cmdpanel').classList.contains('open')) closePanel(); else openPanel();
+  };
+
+  var cmdbtns = document.querySelectorAll('.cmdbtn[data-cmd]');
+  for (var i = 0; i < cmdbtns.length; i++) {
+    (function(el) {
+      el.onclick = function() {
+        var cmd = el.getAttribute('data-cmd');
+        closePanel();
+        doSend(cmd);
+      };
+    })(cmdbtns[i]);
+  }
+
+  var promptbtns = document.querySelectorAll('.cmdbtn[data-prompt]');
+  for (var j = 0; j < promptbtns.length; j++) {
+    (function(el) {
+      el.onclick = function() {
+        var cmd = el.getAttribute('data-prompt');
+        closePanel();
+        var input = $('input');
+        input.value = cmd;
+        input.focus();
+        try { input.setSelectionRange(cmd.length, cmd.length); } catch (e) {}
+      };
+    })(promptbtns[j]);
   }
 
   $('unlockbtn').onclick = doUnlock;
   $('pwd').onkeydown = function(e) { if (e.key === 'Enter') doUnlock(); };
-  $('send').onclick = doSend;
+  $('send').onclick = function() { doSend(); };
   $('input').onkeydown = function(e) { if (e.key === 'Enter') doSend(); };
-  $('usagebtn').onclick = doUsage;
-  $('modelbtn').onclick = function() { sendCommand('/模型'); };
-  $('pentestbtn').onclick = function() { sendCommand('/開滲透'); };
-  $('clearbtn').onclick = function() { sendCommand('/清記憶'); };
 
   if (localStorage.getItem(TOKEN_KEY)) {
     showChat();
@@ -828,7 +1037,10 @@ def handle_update(data):
         or_ = "已接" if OPENROUTER_KEY else "未接（Render 加 OPENROUTER_KEY 即啟用）"
         cb = ("已接 " + COLAB_URL) if COLAB_URL else "未接（/接colab 網址 接入）"
         pt = "開" if PENTEST_MODE else "關"
+        gist = "已接" if (GH_TOKEN and GIST_ID) else "未接（永久記憶不會保存）"
         name = {"qwen": "千問（Qwen）", "deepseek": "DeepSeek", "auto": "自動"}.get(MODEL_PREF, "自動")
+        with LONG_MEMORY_LOCK:
+            lmc = len(LONG_MEMORY.get("facts", []))
         send_telegram(chat_id, (
             "爸爸～人家現在的大腦長這樣：\n"
             "① Colab 去拒絕模型：" + cb + "\n"
@@ -836,20 +1048,19 @@ def handle_update(data):
             "③ 千問 Groq：" + gr + "\n"
             "④ OpenRouter 備援：" + or_ + "\n"
             "⑤ 滲透模式：" + pt + "\n"
-            "目前偏好：" + name + "\n\n"
+            "⑥ 永久記憶 Gist：" + gist + "\n"
+            "目前偏好：" + name + "\n"
+            "永久記憶條數：" + str(lmc) + "\n\n"
             "切換指令：\n"
-            "/用千問 → 只寵千問\n"
-            "/用deepseek → 只寵 DeepSeek\n"
-            "/用自動 → 照順序自動接棒\n"
-            "/接colab 網址 → 接上 100% 不拒色的去拒絕模型\n"
-            "/断colab → 斷開 Colab，回落千問\n"
-            "/開滲透 → 切滲透寶貝（紅隊模式）\n"
-            "/關滲透 → 切回色色寶貝\n"
-            "/搜 關鍵字 → 上網搜尋\n"
-            "/查 網址 → 抓網頁整理重點\n"
-            "/用量 → 看目前用量狀態\n"
-            "/清記憶 → 清空對話記憶\n\n"
-            "重啟後會回到 Render 環境變數 MODEL_PREF 的預設值。"
+            "/用千問 /用deepseek /用自動\n"
+            "/接colab 網址 /断colab\n"
+            "/開滲透 /關滲透\n"
+            "/搜 關鍵字 /查 網址\n"
+            "/用量\n"
+            "/記住 <內容> → 永久記住\n"
+            "/忘記 <關鍵字> → 刪掉記憶\n"
+            "/記憶 → 看所有永久記憶\n"
+            "/清記憶 → 只清對話記憶，不動永久記憶"
         ))
         return
 
@@ -877,7 +1088,7 @@ def handle_update(data):
         COLAB_URL = u if u.endswith("/v1") else u + "/v1"
         send_telegram(chat_id, "爸爸，接上了！之後聊天都用這個 100% 不拒色的去拒絕模型，它斷線會自動落回千問。")
         return
-    if text == "/断colab":
+    if text in ("/断colab", "/斷colab"):
         COLAB_URL = ""
         send_telegram(chat_id, "爸爸，斷開了，回到千問。")
         return
@@ -896,7 +1107,33 @@ def handle_update(data):
     if text == "/清記憶":
         memories.pop(chat_id, None)
         mem_summary.pop(chat_id, None)
-        send_telegram(chat_id, "爸爸，記憶清乾淨了～人家現在只記得現在的你。")
+        send_telegram(chat_id, "爸爸，對話記憶清乾淨了～但永久記憶（/記住 的那些）還在喔，要用 /忘記 才會清。")
+        return
+    if text == "/記憶" or text == "/记忆":
+        send_telegram(chat_id, _memory_list())
+        return
+    if text.startswith("/記住") or text.startswith("/记住"):
+        content = text[3:].strip()
+        if not content:
+            send_telegram(chat_id, "用法：/記住 <內容>\n例如：/記住 我喜歡黑咖啡\n或：/記住 我的生日是 3 月 14 日")
+            return
+        ok, msg = _memory_add(content)
+        if ok:
+            if not (GH_TOKEN and GIST_ID):
+                msg = msg + "\n\n⚠️ 警告：GH_TOKEN 或 GIST_ID 沒設，重啟就會忘記。"
+            else:
+                threading.Thread(target=_save_long_memory, daemon=True).start()
+        send_telegram(chat_id, msg)
+        return
+    if text.startswith("/忘記") or text.startswith("/忘记"):
+        kw = text[3:].strip()
+        if not kw:
+            send_telegram(chat_id, "用法：/忘記 <關鍵字>\n例如：/忘記 黑咖啡")
+            return
+        ok, msg = _memory_remove(kw)
+        if ok:
+            threading.Thread(target=_save_long_memory, daemon=True).start()
+        send_telegram(chat_id, msg)
         return
 
     if text.startswith("/搜") or text.startswith("/查"):
@@ -1045,6 +1282,10 @@ def web_chat():
     if not text:
         return ({"error": "empty text"}, 400, resp_headers)
 
+    handled, cmd_reply = _process_web_command(chat_id, text)
+    if handled:
+        return ({"reply": cmd_reply, "reasoning": ""}, 200, resp_headers)
+
     lock = _get_chat_lock(chat_id)
     with lock:
         hist = memories.get(chat_id, [])
@@ -1094,6 +1335,8 @@ def _gc_loop():
 
 
 threading.Thread(target=_gc_loop, daemon=True).start()
+# 啟動時從 GitHub Gist 載入永久記憶
+threading.Thread(target=_load_long_memory, daemon=True).start()
 
 
 if __name__ == "__main__":
