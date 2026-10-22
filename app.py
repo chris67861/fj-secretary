@@ -25,11 +25,7 @@ GIST_ID = os.environ.get("GIST_ID", "")
 GIST_FILENAME = "memory.json"
 active_tokens = {}
 
-# ══════════════════════════════════════════════════════
-#  ★ 預設背景圖：填圖片網址就換背景，留空就用粉色漸層
-#  建議：上傳到自己 GitHub 倉庫，用 raw 連結
-#  格式：https://raw.githubusercontent.com/用戶名/倉庫名/main/bg.jpg
-# ══════════════════════════════════════════════════════
+# 預設背景圖（留空 = 粉色漸層）
 WEBCHAT_BG_URL = ""
 
 cc = OpenCC("s2twp")
@@ -1232,6 +1228,7 @@ body {
   var CHAT_KEY = 'bb_chat';
   var BG_KEY = 'bb_bg';
   var WEEKDAYS = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+  var NL = String.fromCharCode(10);
 
   function $(id) { return document.getElementById(id); }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
@@ -1253,7 +1250,6 @@ body {
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
-  // ── 背景管理 ──
   var DEFAULT_BG = document.body.style.background;
 
   function applyBg(css) {
@@ -1277,7 +1273,11 @@ body {
   }
 
   function changeBg() {
-    var url = prompt('輸入圖片網址（支援 jpg / png / gif / webp）\n\n例如：\nhttps://raw.githubusercontent.com/你的賬號/你的倉庫/main/bg.jpg\n\n（留空取消）');
+    var msg = '輸入圖片網址（支援 jpg / png / gif / webp）' + NL + NL +
+              '例如：' + NL +
+              'https://raw.githubusercontent.com/你的賬號/你的倉庫/main/bg.jpg' + NL + NL +
+              '（留空取消）';
+    var url = prompt(msg);
     if (url === null) return;
     url = normalizeUrl(url);
     if (!url) return;
@@ -1299,7 +1299,6 @@ body {
   $('bg-change-btn').onclick = function() { closePanel(); changeBg(); };
   $('bg-reset-btn').onclick = function() { closePanel(); resetBg(); };
 
-  // ── 訊息 ──
   function addMsg(role, text) {
     var wrap = document.createElement('div');
     wrap.className = 'msg ' + role;
