@@ -1077,22 +1077,6 @@ def _process_web_command(chat_id, text):
             threading.Thread(target=_save_long_memory, daemon=True).start()
         return True, msg
 
-    if t.startswith("/天氣") or t.startswith("/天气"):
-        city = t[3:].strip()
-        if not city:
-            return True, "用法：/天氣 <城市>\n例如：/天氣 台中\n或：/天氣 台北"
-        w = _get_weather(city)
-        if not w:
-            return True, "爸爸，查不到「" + city + "」的天氣，換個城市名試試？"
-        return True, (
-            "🌤 " + w["location"] + " 現在天氣\n\n"
-            "狀態：" + w["desc"] + "\n"
-            "氣溫：" + str(w["temp"]) + "°C（體感 " + str(w["feels"]) + "°C）\n"
-            "濕度：" + str(w["humidity"]) + "%\n"
-            "風速：" + str(w["wind"]) + " km/h" + (("（" + str(w["wind_dir"]) + "）") if w.get("wind_dir") else "")
-        )
-
-    return False, ""
 
 LAST_UPDATE_ID = 0
 
@@ -1249,7 +1233,6 @@ body {
         <div class="cmd-section">小工具</div>
         <div class="cmds">
           <button class="cmdbtn cmdbtn-tool" data-cmd="/骰子">🎲 骰子</button>
-          <button class="cmdbtn cmdbtn-tool" data-prompt="/天氣 ">🌤 天氣</button>
           <button class="cmdbtn cmdbtn-tool" data-cmd="/用量">📊 用量</button>
         </div>
         <div class="cmd-section">模型 / 滲透</div>
@@ -1932,24 +1915,7 @@ def handle_update(data):
         send_telegram(chat_id, msg)
         return
 
-    if text.startswith("/天氣") or text.startswith("/天气"):
-        city = text[3:].strip()
-        if not city:
-            send_telegram(chat_id, "用法：/天氣 <城市>")
-            return
-        w = _get_weather(city)
-        if not w:
-            send_telegram(chat_id, "爸爸，查不到「" + city + "」的天氣。")
-            return
-        send_telegram(chat_id, (
-            "🌤 " + w["location"] + "\n"
-            "狀態：" + w["desc"] + "\n"
-            "氣溫：" + str(w["temp"]) + "°C（體感 " + str(w["feels"]) + "°C）\n"
-            "濕度：" + str(w["humidity"]) + "%\n"
-            "風速：" + str(w["wind"]) + " km/h" + (("（" + str(w["wind_dir"]) + "）") if w.get("wind_dir") else "")
-        ))
-        return
-
+   
     if text.startswith("/搜") or text.startswith("/查"):
         q = text[2:].strip()
         if not q:
