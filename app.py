@@ -1606,7 +1606,7 @@ body {
         var msg = '（系統錯誤 500）';
         try {
           var errData = JSON.parse(resp);
-          if (errData && errData.error) msg += '\n' + errData.error;
+          if (errData && errData.error) msg += String.fromCharCode(10) + errData.error;
         } catch (e) {}
         addMsg('bot', msg);
         return;
